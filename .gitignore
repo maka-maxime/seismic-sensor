@@ -1,0 +1,8 @@
+**/.settings/
+**/Includes/
+**/Debug/
+**/Drivers/
+**/LWIP/
+**/Middlewares/
+*.ld
+*.*project
