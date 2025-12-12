@@ -23,12 +23,19 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+#define MESSAGE_TEXT_MAXLEN (128UL)
+typedef struct message
+{
+	uint32_t length;
+	char text[MESSAGE_TEXT_MAXLEN];
+} Message;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -50,6 +57,12 @@ UART_HandleTypeDef huart3;
 osThreadId defaultTaskHandle;
 /* USER CODE BEGIN PV */
 osThreadId heartbeatHandle;
+osThreadId loggerHandle;
+
+#define MAILQ_LENGTH (0x08)
+osMailQId mailQueueHandle;
+
+osMutexId uartMutexHandle;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -61,6 +74,9 @@ void StartDefaultTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 void Heartbeat(void const * argument);
+void Logger(void const * argument);
+
+osStatus logMessage(const char *__restrict format, ...);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -104,7 +120,8 @@ int main(void)
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
+  osMutexDef(uartMutex);
+  uartMutexHandle = osMutexCreate(osMutex(uartMutex));
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
@@ -116,7 +133,8 @@ int main(void)
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
+  osMailQDef(mailQueue, MAILQ_LENGTH, Message);
+  mailQueueHandle = osMailCreate(osMailQ(mailQueue), NULL);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -127,6 +145,9 @@ int main(void)
   /* USER CODE BEGIN RTOS_THREADS */
   osThreadDef(heartbeat, Heartbeat, osPriorityLow, 0, 256);
   heartbeatHandle = osThreadCreate(osThread(heartbeat), NULL);
+
+  osThreadDef(logger, Logger, osPriorityNormal, 0, 256);
+  loggerHandle = osThreadCreate(osThread(logger), NULL);
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
@@ -371,6 +392,42 @@ void Heartbeat(void const * argument)
 		osDelay(1000);
 	}
 }
+
+osStatus logMessage(const char *__restrict format, ...)
+{
+	// osMailAlloc() is never blocking, millisec is discarded in v1 implementation
+	Message *message = (Message *)osMailAlloc(mailQueueHandle, 0);
+	if (message == NULL)
+		return osErrorNoMemory;
+
+	va_list args;
+
+	va_start(args, format);
+	vsnprintf(message->text, MESSAGE_TEXT_MAXLEN, format, args);
+	va_end(args);
+
+	message->length = strlen(message->text);
+
+	return osMailPut(mailQueueHandle, message);
+}
+
+void Logger(void const * argument)
+{
+	osEvent event = {0x00};
+	Message *message;
+	while (1)
+	{
+		event = osMailGet(mailQueueHandle, 1000);
+		if (osEventMail != event.status)
+			continue;
+
+		message = (Message *)event.value.p;
+		osMutexWait(uartMutexHandle, osWaitForever);
+		HAL_UART_Transmit(&huart3, (uint8_t*)message->text, message->length, 100);
+		osMutexRelease(uartMutexHandle);
+		osMailFree(mailQueueHandle, event.value.p);
+	}
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -388,7 +445,7 @@ void StartDefaultTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    osDelay(10);
   }
   /* USER CODE END 5 */
 }
