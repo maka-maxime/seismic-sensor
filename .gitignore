@@ -4,5 +4,6 @@
 **/Drivers/
 **/LWIP/
 **/Middlewares/
+*.launch
 *.ld
 *.*project
