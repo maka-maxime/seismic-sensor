@@ -40,10 +40,10 @@ typedef struct message
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TID_MASTER "T_01: "
-#define TID_HEART  "T_02: "
-#define TID_LOGGR  "T_03: "
-#define TID_ACCEL  "T_04: "
+#define TID_MASTER "[MASTER]: "
+#define TID_HEART  "[ HEART]: "
+#define TID_LOGGR  "[LOGGER]: "
+#define TID_ACCEL  "[ ACCEL]: "
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -165,11 +165,11 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256);
+  osThreadDef(defaultTask, StartDefaultTask, osPriorityAboveNormal, 0, 256);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  osThreadDef(heartbeat, Heartbeat, osPriorityLow, 0, 256);
+  osThreadDef(heartbeat, Heartbeat, osPriorityNormal, 0, 256);
   heartbeatHandle = osThreadCreate(osThread(heartbeat), NULL);
 
   osThreadDef(logger, Logger, osPriorityNormal, 0, 256);
