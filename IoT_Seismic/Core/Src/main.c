@@ -40,7 +40,10 @@ typedef struct message
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define TID_MASTER "T_01: "
+#define TID_HEART  "T_02: "
+#define TID_LOGGR  "T_03: "
+#define TID_ACCEL  "T_04: "
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,8 +52,12 @@ typedef struct message
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc3;
+DMA_HandleTypeDef hdma_adc3;
 
 RTC_HandleTypeDef hrtc;
+
+TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart3;
 
@@ -58,23 +65,40 @@ osThreadId defaultTaskHandle;
 /* USER CODE BEGIN PV */
 osThreadId heartbeatHandle;
 osThreadId loggerHandle;
+osThreadId accelerometerHandle;
 
 #define MAILQ_LENGTH (0x08)
 osMailQId mailQueueHandle;
 
 osMutexId uartMutexHandle;
+
+#define ACCEL_AXES 3
+#define ACCEL_SAMPLES_PER_AXIS 10
+#define ACCEL_SAMPLES (ACCEL_AXES * ACCEL_SAMPLES_PER_AXIS)
+#define ACCEL_FSR 3330
+#define ACCEL_X_BIAS 1670
+#define ACCEL_Y_BIAS 1655
+#define ACCEL_Z_BIAS 1715
+#define ACCEL_SENSITIVITY 333
+#define ADC_MAX_VALUE 4095
+uint16_t accelDmaBuffer[ACCEL_SAMPLES] = {0x00};
+uint32_t samplingDone = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_RTC_Init(void);
+static void MX_TIM6_Init(void);
+static void MX_ADC3_Init(void);
 void StartDefaultTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 void Heartbeat(void const * argument);
 void Logger(void const * argument);
+void Accelerometer(void const * argument);
 
 osStatus logMessage(const char *__restrict format, ...);
 /* USER CODE END PFP */
@@ -113,10 +137,12 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART3_UART_Init();
   MX_RTC_Init();
+  MX_TIM6_Init();
+  MX_ADC3_Init();
   /* USER CODE BEGIN 2 */
-
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -148,6 +174,9 @@ int main(void)
 
   osThreadDef(logger, Logger, osPriorityNormal, 0, 256);
   loggerHandle = osThreadCreate(osThread(logger), NULL);
+
+  osThreadDef(accelerometer, Accelerometer, osPriorityNormal, 0, 256);
+  accelerometerHandle = osThreadCreate(osThread(accelerometer), NULL);
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
@@ -215,6 +244,76 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief ADC3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC3_Init(void)
+{
+
+  /* USER CODE BEGIN ADC3_Init 0 */
+
+  /* USER CODE END ADC3_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC3_Init 1 */
+
+  /* USER CODE END ADC3_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc3.Instance = ADC3;
+  hadc3.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc3.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc3.Init.ScanConvMode = ADC_SCAN_ENABLE;
+  hadc3.Init.ContinuousConvMode = DISABLE;
+  hadc3.Init.DiscontinuousConvMode = DISABLE;
+  hadc3.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc3.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T6_TRGO;
+  hadc3.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc3.Init.NbrOfConversion = 3;
+  hadc3.Init.DMAContinuousRequests = ENABLE;
+  hadc3.Init.EOCSelection = ADC_EOC_SEQ_CONV;
+  if (HAL_ADC_Init(&hadc3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_7;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_6;
+  sConfig.Rank = ADC_REGULAR_RANK_3;
+  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC3_Init 2 */
+
+  /* USER CODE END ADC3_Init 2 */
+
+}
+
+/**
   * @brief RTC Initialization Function
   * @param None
   * @retval None
@@ -278,6 +377,44 @@ static void MX_RTC_Init(void)
 }
 
 /**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 80-1;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 10000-1;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+
+  /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -313,6 +450,22 @@ static void MX_USART3_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -326,6 +479,7 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
@@ -386,6 +540,7 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void Heartbeat(void const * argument)
 {
+	logMessage(TID_HEART "Started heartbeat task.\r\n");
 	while (1)
 	{
 		HAL_GPIO_TogglePin(LD_HEART_GPIO_Port, LD_HEART_Pin);
@@ -413,6 +568,7 @@ osStatus logMessage(const char *__restrict format, ...)
 
 void Logger(void const * argument)
 {
+	logMessage(TID_LOGGR "Started logger task.\r\n");
 	osEvent event = {0x00};
 	Message *message;
 	while (1)
@@ -426,6 +582,44 @@ void Logger(void const * argument)
 		HAL_UART_Transmit(&huart3, (uint8_t*)message->text, message->length, 100);
 		osMutexRelease(uartMutexHandle);
 		osMailFree(mailQueueHandle, event.value.p);
+	}
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+	samplingDone = 1;
+}
+
+void Accelerometer(void const * argument)
+{
+	int32_t sumX = 0;
+	int32_t sumY = 0;
+	int32_t sumZ = 0;
+	float accelX;
+	float accelY;
+	float accelZ;
+	uint32_t bufferIndex = 0;
+	logMessage(TID_ACCEL "Started accelerometer task.\r\n");
+	HAL_TIM_Base_Start_IT(&htim6);
+	while (1)
+	{
+		if (samplingDone == 1) {
+			while (bufferIndex < 10)
+			{
+				sumX += accelDmaBuffer[ACCEL_AXES * bufferIndex];
+				sumY += accelDmaBuffer[ACCEL_AXES * bufferIndex + 1];
+				sumZ += accelDmaBuffer[ACCEL_AXES * bufferIndex + 2];
+				bufferIndex++;
+			}
+			bufferIndex = 0;
+			samplingDone = 0;
+
+			accelX = (((float)sumX * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_X_BIAS) / ACCEL_SENSITIVITY;
+			accelY = (((float)sumY * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Y_BIAS) / ACCEL_SENSITIVITY;
+			accelZ = (((float)sumZ * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Z_BIAS) / ACCEL_SENSITIVITY;
+			logMessage(TID_ACCEL "x=%6.2f, y=%6.2f, z=%6.2f\r\n", accelX, accelY, accelZ);
+			sumX = sumY = sumZ = 0;
+		}
 	}
 }
 /* USER CODE END 4 */
@@ -443,6 +637,9 @@ void StartDefaultTask(void const * argument)
   MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
+  logMessage(TID_MASTER "Started default task.\r\n");
+  HAL_ADC_Start_DMA(&hadc3, (uint32_t *)accelDmaBuffer, ACCEL_SAMPLES);
+
   for(;;)
   {
     osDelay(10);
