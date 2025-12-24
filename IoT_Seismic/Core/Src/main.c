@@ -44,6 +44,8 @@ typedef struct message
 #define TID_HEART "[HEART ]: "
 #define TID_LOGGR "[LOGGER]: "
 #define TID_ACCEL "[ACCEL ]: "
+
+#define SYS_DEBOUNCE_MSEC 100
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -73,8 +75,8 @@ osMailQId mailQueueHandle;
 
 osMutexId uartMutexHandle;
 
+#define SIG_BUTTON 0x00000010
 #define SIG_RESUME 0x00000100
-uint32_t buttonPressed = 0;
 uint32_t suspendTasks = 0;
 
 #define ACCEL_AXES 3
@@ -702,9 +704,9 @@ void Accelerometer(void const * argument)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-	if ((GPIO_Pin == USER_Btn_Pin) && (buttonPressed == 0))
+	if (GPIO_Pin == USER_Btn_Pin)
 	{
-		buttonPressed = 1;
+		osSignalSet(systemConductorHandle, SIG_BUTTON);
 	}
 }
 /* USER CODE END 4 */
@@ -724,14 +726,21 @@ void SystemConductor(void const * argument)
   /* Infinite loop */
   logMessage(TID_SYS "Started System Conductor.\r\n");
   HAL_ADC_Start_DMA(&hadc3, (uint32_t *)accelDmaBuffer, ACCEL_SAMPLES);
-
+  osEvent event;
+  uint32_t lastTicks = 0;
+  uint32_t currentTicks;
   for(;;)
   {
-  	osDelay(10);
-  	if (buttonPressed == 0)
-  	{
+  	event = osSignalWait(SIG_BUTTON, osWaitForever);
+  	if (event.status != osEventSignal)
   		continue;
-  	}
+
+  	currentTicks = osKernelSysTick();
+  	if (lastTicks > currentTicks)
+  		lastTicks =  0;
+  	if ((currentTicks - lastTicks) < SYS_DEBOUNCE_MSEC)
+  		continue;
+  	lastTicks = currentTicks;
 
 		if (suspendTasks == 0)
 		{
@@ -745,8 +754,6 @@ void SystemConductor(void const * argument)
 			osSignalSet(heartbeatHandle, SIG_RESUME);
 			osSignalSet(accelerometerHandle, SIG_RESUME);
 		}
-		osDelay(90);
-		buttonPressed = 0;
   }
   /* USER CODE END 5 */
 }
