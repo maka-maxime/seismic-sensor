@@ -82,10 +82,12 @@ void Error_Handler(void);
 #define RMII_RXD0_GPIO_Port GPIOC
 #define RMII_RXD1_Pin GPIO_PIN_5
 #define RMII_RXD1_GPIO_Port GPIOC
+#define LD_PAUSE_Pin GPIO_PIN_0
+#define LD_PAUSE_GPIO_Port GPIOB
 #define RMII_TXD1_Pin GPIO_PIN_13
 #define RMII_TXD1_GPIO_Port GPIOB
-#define LD_PAUSE_Pin GPIO_PIN_14
-#define LD_PAUSE_GPIO_Port GPIOB
+#define LD_ERROR_Pin GPIO_PIN_14
+#define LD_ERROR_GPIO_Port GPIOB
 #define STLK_RX_Pin GPIO_PIN_8
 #define STLK_RX_GPIO_Port GPIOD
 #define STLK_TX_Pin GPIO_PIN_9
@@ -114,8 +116,6 @@ void Error_Handler(void);
 #define RMII_TXD0_GPIO_Port GPIOG
 #define SW0_Pin GPIO_PIN_3
 #define SW0_GPIO_Port GPIOB
-#define LD2_Pin GPIO_PIN_7
-#define LD2_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

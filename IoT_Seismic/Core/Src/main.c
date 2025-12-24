@@ -61,7 +61,7 @@ DMA_HandleTypeDef hdma_adc3;
 
 RTC_HandleTypeDef hrtc;
 
-TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart3;
@@ -102,7 +102,7 @@ static void MX_USART3_UART_Init(void);
 static void MX_RTC_Init(void);
 static void MX_ADC3_Init(void);
 static void MX_TIM6_Init(void);
-static void MX_TIM3_Init(void);
+static void MX_TIM4_Init(void);
 void SystemConductor(void const * argument);
 
 /* USER CODE BEGIN PFP */
@@ -152,7 +152,7 @@ int main(void)
   MX_RTC_Init();
   MX_ADC3_Init();
   MX_TIM6_Init();
-  MX_TIM3_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   /* USER CODE END 2 */
 
@@ -388,36 +388,36 @@ static void MX_RTC_Init(void)
 }
 
 /**
-  * @brief TIM3 Initialization Function
+  * @brief TIM4 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_TIM3_Init(void)
+static void MX_TIM4_Init(void)
 {
 
-  /* USER CODE BEGIN TIM3_Init 0 */
+  /* USER CODE BEGIN TIM4_Init 0 */
 
-  /* USER CODE END TIM3_Init 0 */
+  /* USER CODE END TIM4_Init 0 */
 
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
 
-  /* USER CODE BEGIN TIM3_Init 1 */
+  /* USER CODE BEGIN TIM4_Init 1 */
 
-  /* USER CODE END TIM3_Init 1 */
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 1600-1;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 50000-1;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_OC_Init(&htim3) != HAL_OK)
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 800-1;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 50000-1;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_OC_Init(&htim4) != HAL_OK)
   {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
@@ -425,14 +425,14 @@ static void MX_TIM3_Init(void)
   sConfigOC.Pulse = 50000-1;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_OC_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  if (HAL_TIM_OC_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN TIM3_Init 2 */
+  /* USER CODE BEGIN TIM4_Init 2 */
 
-  /* USER CODE END TIM3_Init 2 */
-  HAL_TIM_MspPostInit(&htim3);
+  /* USER CODE END TIM4_Init 2 */
+  HAL_TIM_MspPostInit(&htim4);
 
 }
 
@@ -547,7 +547,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LD_PAUSE_Pin|LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LD_PAUSE_Pin|LD_ERROR_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
@@ -558,8 +558,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USER_Btn_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : LD_PAUSE_Pin LD2_Pin */
-  GPIO_InitStruct.Pin = LD_PAUSE_Pin|LD2_Pin;
+  /*Configure GPIO pins : LD_PAUSE_Pin LD_ERROR_Pin */
+  GPIO_InitStruct.Pin = LD_PAUSE_Pin|LD_ERROR_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -611,20 +611,20 @@ void Heartbeat(void const * argument)
 		logMessage(TID_HEART "Unable to start task.\r\n");
 		Error_Handler();
 	}
-	HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_3);
+	HAL_TIM_OC_Start(&htim4, TIM_CHANNEL_2);
 	logMessage(TID_HEART "Started Heartbeat.\r\n");
 	while (1)
 	{
 		if (tasksState == SYS_TASKS_PAUSE)
 		{
-			HAL_TIM_OC_Stop(&htim3, TIM_CHANNEL_3);
-			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+			HAL_TIM_OC_Stop(&htim4, TIM_CHANNEL_2);
+			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
 			logMessage(TID_HEART "Task suspended.\r\n");
 			do
 				event = osSignalWait(SIG_RESUME, osWaitForever);
 			while (event.status != osEventSignal);
 			logMessage(TID_HEART "Task resumed.\r\n");
-			HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_3);
+			HAL_TIM_OC_Start(&htim4, TIM_CHANNEL_2);
 		}
 	}
 }
@@ -810,7 +810,7 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LD_ERROR_GPIO_Port, LD_ERROR_Pin, GPIO_PIN_SET);
   while (1)
   {
   }
