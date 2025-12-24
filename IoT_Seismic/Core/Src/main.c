@@ -61,7 +61,7 @@ TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart3;
 
-osThreadId defaultTaskHandle;
+osThreadId systemConductorHandle;
 /* USER CODE BEGIN PV */
 osThreadId heartbeatHandle;
 osThreadId loggerHandle;
@@ -71,6 +71,10 @@ osThreadId accelerometerHandle;
 osMailQId mailQueueHandle;
 
 osMutexId uartMutexHandle;
+
+#define SIG_RESUME 0x00000100
+uint32_t buttonPressed = 0;
+uint32_t suspendTasks = 0;
 
 #define ACCEL_AXES 3
 #define ACCEL_SAMPLES_PER_AXIS 10
@@ -91,9 +95,9 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_RTC_Init(void);
-static void MX_TIM6_Init(void);
 static void MX_ADC3_Init(void);
-void StartDefaultTask(void const * argument);
+static void MX_TIM6_Init(void);
+void SystemConductor(void const * argument);
 
 /* USER CODE BEGIN PFP */
 void Heartbeat(void const * argument);
@@ -140,8 +144,8 @@ int main(void)
   MX_DMA_Init();
   MX_USART3_UART_Init();
   MX_RTC_Init();
-  MX_TIM6_Init();
   MX_ADC3_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   /* USER CODE END 2 */
 
@@ -164,9 +168,9 @@ int main(void)
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityAboveNormal, 0, 256);
-  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+  /* definition and creation of systemConductor */
+  osThreadDef(systemConductor, SystemConductor, osPriorityHigh, 0, 256);
+  systemConductorHandle = osThreadCreate(osThread(systemConductor), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   osThreadDef(heartbeat, Heartbeat, osPriorityNormal, 0, 256);
@@ -532,6 +536,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USB_VBUS_GPIO_Port, &GPIO_InitStruct);
 
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
@@ -541,8 +549,20 @@ static void MX_GPIO_Init(void)
 void Heartbeat(void const * argument)
 {
 	logMessage(TID_HEART "Started heartbeat task.\r\n");
+
 	while (1)
 	{
+		if (suspendTasks == 1)
+		{
+			HAL_GPIO_WritePin(LD_HEART_GPIO_Port, LD_HEART_Pin, GPIO_PIN_RESET);
+			HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+
+			logMessage(TID_HEART "Task suspended.\r\n");
+			osSignalWait(SIG_RESUME, osWaitForever);
+			logMessage(TID_HEART "Task resumed.\r\n");
+			HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+		}
+
 		HAL_GPIO_TogglePin(LD_HEART_GPIO_Port, LD_HEART_Pin);
 		osDelay(1000);
 	}
@@ -603,6 +623,15 @@ void Accelerometer(void const * argument)
 	HAL_TIM_Base_Start_IT(&htim6);
 	while (1)
 	{
+		if (suspendTasks == 1)
+		{
+			HAL_TIM_Base_Stop_IT(&htim6);
+			logMessage(TID_ACCEL "Task suspended.\r\n");
+			osSignalWait(SIG_RESUME, osWaitForever);
+			logMessage(TID_ACCEL "Task resumed.\r\n");
+			HAL_TIM_Base_Start_IT(&htim6);
+		}
+
 		if (samplingDone == 1) {
 			while (bufferIndex < 10)
 			{
@@ -622,16 +651,24 @@ void Accelerometer(void const * argument)
 		}
 	}
 }
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	if ((GPIO_Pin == USER_Btn_Pin) && (buttonPressed == 0))
+	{
+		buttonPressed = 1;
+	}
+}
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartDefaultTask */
+/* USER CODE BEGIN Header_SystemConductor */
 /**
-  * @brief  Function implementing the defaultTask thread.
+  * @brief  Function implementing the systemConductor thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void const * argument)
+/* USER CODE END Header_SystemConductor */
+void SystemConductor(void const * argument)
 {
   /* init code for LWIP */
   MX_LWIP_Init();
@@ -642,7 +679,24 @@ void StartDefaultTask(void const * argument)
 
   for(;;)
   {
-    osDelay(10);
+  	osDelay(10);
+  	if (buttonPressed == 0)
+  	{
+  		continue;
+  	}
+
+		if (suspendTasks == 0)
+		{
+			suspendTasks = 1;
+		}
+		else
+		{
+			suspendTasks = 0;
+			osSignalSet(heartbeatHandle, SIG_RESUME);
+			osSignalSet(accelerometerHandle, SIG_RESUME);
+		}
+		osDelay(90);
+		buttonPressed = 0;
   }
   /* USER CODE END 5 */
 }
