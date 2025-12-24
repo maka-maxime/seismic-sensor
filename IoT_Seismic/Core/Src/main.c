@@ -765,14 +765,14 @@ void SystemConductor(void const * argument)
   		continue;
   	lastTicks = currentTicks;
 
-		if (tasksState == 0)
+		if (tasksState == SYS_TASKS_RUN)
 		{
-			tasksState = 1;
+			tasksState = SYS_TASKS_PAUSE;
 			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_SET);
 		}
 		else
 		{
-			tasksState = 0;
+			tasksState = SYS_TASKS_RUN;
 			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_RESET);
 			osSignalSet(heartbeatHandle, SIG_RESUME);
 			osSignalSet(accelerometerHandle, SIG_RESUME);
