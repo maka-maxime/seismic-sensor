@@ -40,10 +40,10 @@ typedef struct message
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TID_MASTER "[MASTER]: "
-#define TID_HEART  "[ HEART]: "
-#define TID_LOGGR  "[LOGGER]: "
-#define TID_ACCEL  "[ ACCEL]: "
+#define TID_SYS   "[SYSTEM]: "
+#define TID_HEART "[HEART ]: "
+#define TID_LOGGR "[LOGGER]: "
+#define TID_ACCEL "[ACCEL ]: "
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -601,7 +601,7 @@ static void MX_GPIO_Init(void)
 void Heartbeat(void const * argument)
 {
 	HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_3);
-	logMessage(TID_HEART "Started heartbeat task.\r\n");
+	logMessage(TID_HEART "Started Heartbeat.\r\n");
 	while (1)
 	{
 		if (suspendTasks == 1)
@@ -636,7 +636,7 @@ osStatus logMessage(const char *__restrict format, ...)
 
 void Logger(void const * argument)
 {
-	logMessage(TID_LOGGR "Started logger task.\r\n");
+	logMessage(TID_LOGGR "Started Logger.\r\n");
 	osEvent event = {0x00};
 	Message *message;
 	while (1)
@@ -668,7 +668,7 @@ void Accelerometer(void const * argument)
 	float accelZ;
 	uint32_t bufferIndex = 0;
 	HAL_TIM_Base_Start_IT(&htim6);
-	logMessage(TID_ACCEL "Started accelerometer task.\r\n");
+	logMessage(TID_ACCEL "Started Accelerometer.\r\n");
 	while (1)
 	{
 		if (suspendTasks == 1)
@@ -722,7 +722,7 @@ void SystemConductor(void const * argument)
   MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
-  logMessage(TID_MASTER "Started default task.\r\n");
+  logMessage(TID_SYS "Started System Conductor.\r\n");
   HAL_ADC_Start_DMA(&hadc3, (uint32_t *)accelDmaBuffer, ACCEL_SAMPLES);
 
   for(;;)
