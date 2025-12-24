@@ -46,6 +46,8 @@ typedef struct message
 #define TID_ACCEL "[ACCEL ]: "
 
 #define SYS_DEBOUNCE_MSEC 100
+#define SYS_TASKS_RUN 0
+#define SYS_TASKS_PAUSE 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -77,7 +79,7 @@ osMutexId uartMutexHandle;
 
 #define SIG_BUTTON 0x00000010
 #define SIG_RESUME 0x00000100
-uint32_t suspendTasks = 0;
+uint32_t tasksState = SYS_TASKS_PAUSE;
 
 #define ACCEL_AXES 3
 #define ACCEL_SAMPLES_PER_AXIS 10
@@ -602,16 +604,25 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void Heartbeat(void const * argument)
 {
+	osEvent event;
+	event = osSignalWait(SIG_RESUME, osWaitForever);
+	if (event.status != osEventSignal)
+	{
+		logMessage(TID_HEART "Unable to start task.\r\n");
+		Error_Handler();
+	}
 	HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_3);
 	logMessage(TID_HEART "Started Heartbeat.\r\n");
 	while (1)
 	{
-		if (suspendTasks == 1)
+		if (tasksState == SYS_TASKS_PAUSE)
 		{
 			HAL_TIM_OC_Stop(&htim3, TIM_CHANNEL_3);
 			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
 			logMessage(TID_HEART "Task suspended.\r\n");
-			osSignalWait(SIG_RESUME, osWaitForever);
+			do
+				event = osSignalWait(SIG_RESUME, osWaitForever);
+			while (event.status != osEventSignal);
 			logMessage(TID_HEART "Task resumed.\r\n");
 			HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_3);
 		}
@@ -669,15 +680,24 @@ void Accelerometer(void const * argument)
 	float accelY;
 	float accelZ;
 	uint32_t bufferIndex = 0;
+	osEvent event;
+	event = osSignalWait(SIG_RESUME, osWaitForever);
+	if (event.status != osEventSignal)
+	{
+		logMessage(TID_ACCEL "Unable to start task.\r\n");
+		Error_Handler();
+	}
 	HAL_TIM_Base_Start_IT(&htim6);
 	logMessage(TID_ACCEL "Started Accelerometer.\r\n");
 	while (1)
 	{
-		if (suspendTasks == 1)
+		if (tasksState == SYS_TASKS_PAUSE)
 		{
 			HAL_TIM_Base_Stop_IT(&htim6);
 			logMessage(TID_ACCEL "Task suspended.\r\n");
-			osSignalWait(SIG_RESUME, osWaitForever);
+			do {
+				event = osSignalWait(SIG_RESUME, osWaitForever);
+			} while (event.status != osEventSignal);
 			logMessage(TID_ACCEL "Task resumed.\r\n");
 			HAL_TIM_Base_Start_IT(&htim6);
 		}
@@ -724,8 +744,9 @@ void SystemConductor(void const * argument)
   MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
-  logMessage(TID_SYS "Started System Conductor.\r\n");
   HAL_ADC_Start_DMA(&hadc3, (uint32_t *)accelDmaBuffer, ACCEL_SAMPLES);
+  HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_SET);
+  logMessage(TID_SYS "Started System Conductor.\r\n");
   osEvent event;
   uint32_t lastTicks = 0;
   uint32_t currentTicks;
@@ -742,14 +763,14 @@ void SystemConductor(void const * argument)
   		continue;
   	lastTicks = currentTicks;
 
-		if (suspendTasks == 0)
+		if (tasksState == 0)
 		{
-			suspendTasks = 1;
+			tasksState = 1;
 			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_SET);
 		}
 		else
 		{
-			suspendTasks = 0;
+			tasksState = 0;
 			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_RESET);
 			osSignalSet(heartbeatHandle, SIG_RESUME);
 			osSignalSet(accelerometerHandle, SIG_RESUME);
@@ -789,6 +810,7 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
   while (1)
   {
   }
