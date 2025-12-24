@@ -57,6 +57,7 @@ DMA_HandleTypeDef hdma_adc3;
 
 RTC_HandleTypeDef hrtc;
 
+TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart3;
@@ -97,6 +98,7 @@ static void MX_USART3_UART_Init(void);
 static void MX_RTC_Init(void);
 static void MX_ADC3_Init(void);
 static void MX_TIM6_Init(void);
+static void MX_TIM3_Init(void);
 void SystemConductor(void const * argument);
 
 /* USER CODE BEGIN PFP */
@@ -146,6 +148,7 @@ int main(void)
   MX_RTC_Init();
   MX_ADC3_Init();
   MX_TIM6_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   /* USER CODE END 2 */
 
@@ -381,6 +384,55 @@ static void MX_RTC_Init(void)
 }
 
 /**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 1600-1;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 50000-1;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_OC_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 50000-1;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+  HAL_TIM_MspPostInit(&htim3);
+
+}
+
+/**
   * @brief TIM6 Initialization Function
   * @param None
   * @retval None
@@ -491,7 +543,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LD_HEART_Pin|LD3_Pin|LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LD_PAUSE_Pin|LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
@@ -502,8 +554,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USER_Btn_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : LD_HEART_Pin LD3_Pin LD2_Pin */
-  GPIO_InitStruct.Pin = LD_HEART_Pin|LD3_Pin|LD2_Pin;
+  /*Configure GPIO pins : LD_PAUSE_Pin LD2_Pin */
+  GPIO_InitStruct.Pin = LD_PAUSE_Pin|LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -548,23 +600,19 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void Heartbeat(void const * argument)
 {
+	HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_3);
 	logMessage(TID_HEART "Started heartbeat task.\r\n");
-
 	while (1)
 	{
 		if (suspendTasks == 1)
 		{
-			HAL_GPIO_WritePin(LD_HEART_GPIO_Port, LD_HEART_Pin, GPIO_PIN_RESET);
-			HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
-
+			HAL_TIM_OC_Stop(&htim3, TIM_CHANNEL_3);
+			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
 			logMessage(TID_HEART "Task suspended.\r\n");
 			osSignalWait(SIG_RESUME, osWaitForever);
 			logMessage(TID_HEART "Task resumed.\r\n");
-			HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+			HAL_TIM_OC_Start(&htim3, TIM_CHANNEL_3);
 		}
-
-		HAL_GPIO_TogglePin(LD_HEART_GPIO_Port, LD_HEART_Pin);
-		osDelay(1000);
 	}
 }
 
@@ -619,8 +667,8 @@ void Accelerometer(void const * argument)
 	float accelY;
 	float accelZ;
 	uint32_t bufferIndex = 0;
-	logMessage(TID_ACCEL "Started accelerometer task.\r\n");
 	HAL_TIM_Base_Start_IT(&htim6);
+	logMessage(TID_ACCEL "Started accelerometer task.\r\n");
 	while (1)
 	{
 		if (suspendTasks == 1)
@@ -688,10 +736,12 @@ void SystemConductor(void const * argument)
 		if (suspendTasks == 0)
 		{
 			suspendTasks = 1;
+			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_SET);
 		}
 		else
 		{
 			suspendTasks = 0;
+			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_RESET);
 			osSignalSet(heartbeatHandle, SIG_RESUME);
 			osSignalSet(accelerometerHandle, SIG_RESUME);
 		}
