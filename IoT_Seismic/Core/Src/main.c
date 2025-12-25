@@ -46,8 +46,8 @@ typedef struct message
 #define TID_ACCEL "[ACCEL ]: "
 
 #define SYS_DEBOUNCE_MSEC 100
-#define SYS_TASKS_RUN 0
-#define SYS_TASKS_PAUSE 1
+#define SYS_TASKS_RUNNING 0
+#define SYS_TASKS_PAUSED 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -77,9 +77,11 @@ osMailQId mailQueueHandle;
 
 osMutexId uartMutexHandle;
 
+osSemaphoreId accelerometerSemHandle;
+
 #define SIG_BUTTON 0x00000010
 #define SIG_RESUME 0x00000100
-uint32_t tasksState = SYS_TASKS_PAUSE;
+uint32_t tasksState = SYS_TASKS_PAUSED;
 
 #define ACCEL_AXES 3
 #define ACCEL_SAMPLES_PER_AXIS 10
@@ -91,7 +93,6 @@ uint32_t tasksState = SYS_TASKS_PAUSE;
 #define ACCEL_SENSITIVITY 333
 #define ADC_MAX_VALUE 4095
 uint16_t accelDmaBuffer[ACCEL_SAMPLES] = {0x00};
-uint32_t samplingDone = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -162,7 +163,13 @@ int main(void)
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
+  osSemaphoreDef(accelerometerSem);
+  accelerometerSemHandle = osSemaphoreCreate(osSemaphore(accelerometerSem), 1);
+  if (tasksState == SYS_TASKS_PAUSED)
+  {
+  	// take the binary semaphore to block the task after initialisation.
+  	osSemaphoreWait(accelerometerSemHandle, osWaitForever);
+  }
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -617,7 +624,7 @@ void Heartbeat(void const * argument)
 	logMessage(TID_HEART "Started Heartbeat.\r\n");
 	while (1)
 	{
-		if (tasksState == SYS_TASKS_PAUSE)
+		if (tasksState == SYS_TASKS_PAUSED)
 		{
 			HAL_TIM_OC_Stop(&htim4, TIM_CHANNEL_2);
 			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
@@ -670,7 +677,7 @@ void Logger(void const * argument)
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
-	samplingDone = 1;
+	osSemaphoreRelease(accelerometerSemHandle);
 }
 
 void Accelerometer(void const * argument)
@@ -681,46 +688,43 @@ void Accelerometer(void const * argument)
 	float accelX;
 	float accelY;
 	float accelZ;
-	uint32_t bufferIndex = 0;
-	osEvent event;
-	event = osSignalWait(SIG_RESUME, osWaitForever);
-	if (event.status != osEventSignal)
-	{
-		logMessage(TID_ACCEL "Unable to start task.\r\n");
-		Error_Handler();
-	}
-	HAL_TIM_Base_Start_IT(&htim6);
-	logMessage(TID_ACCEL "Started Accelerometer.\r\n");
+	uint8_t bufferIndex = 0;
+
+	logMessage(TID_ACCEL "Accelerometer ready.\r\n");
 	while (1)
 	{
-		if (tasksState == SYS_TASKS_PAUSE)
+		osSemaphoreWait(accelerometerSemHandle, osWaitForever);
+
+		if (tasksState == SYS_TASKS_PAUSED)
 		{
 			HAL_TIM_Base_Stop_IT(&htim6);
 			logMessage(TID_ACCEL "Task suspended.\r\n");
-			do {
-				event = osSignalWait(SIG_RESUME, osWaitForever);
-			} while (event.status != osEventSignal);
-			logMessage(TID_ACCEL "Task resumed.\r\n");
+			continue;
+		}
+
+		// Only restart the timer once after resume.
+		if (htim6.State == HAL_TIM_STATE_READY)
+		{
 			HAL_TIM_Base_Start_IT(&htim6);
+			logMessage(TID_ACCEL "Task resumed.\r\n");
+			// Wait until the next interrupt, DMA transfer may not be done after resume.
+			osSemaphoreWait(accelerometerSemHandle, osWaitForever);
 		}
 
-		if (samplingDone == 1) {
-			while (bufferIndex < 10)
-			{
-				sumX += accelDmaBuffer[ACCEL_AXES * bufferIndex];
-				sumY += accelDmaBuffer[ACCEL_AXES * bufferIndex + 1];
-				sumZ += accelDmaBuffer[ACCEL_AXES * bufferIndex + 2];
-				bufferIndex++;
-			}
-			bufferIndex = 0;
-			samplingDone = 0;
-
-			accelX = (((float)sumX * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_X_BIAS) / ACCEL_SENSITIVITY;
-			accelY = (((float)sumY * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Y_BIAS) / ACCEL_SENSITIVITY;
-			accelZ = (((float)sumZ * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Z_BIAS) / ACCEL_SENSITIVITY;
-			logMessage(TID_ACCEL "x=%6.2f, y=%6.2f, z=%6.2f\r\n", accelX, accelY, accelZ);
-			sumX = sumY = sumZ = 0;
+		while (bufferIndex < 10)
+		{
+			sumX += accelDmaBuffer[ACCEL_AXES * bufferIndex];
+			sumY += accelDmaBuffer[ACCEL_AXES * bufferIndex + 1];
+			sumZ += accelDmaBuffer[ACCEL_AXES * bufferIndex + 2];
+			bufferIndex++;
 		}
+		bufferIndex = 0;
+
+		accelX = (((float)sumX * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_X_BIAS) / ACCEL_SENSITIVITY;
+		accelY = (((float)sumY * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Y_BIAS) / ACCEL_SENSITIVITY;
+		accelZ = (((float)sumZ * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Z_BIAS) / ACCEL_SENSITIVITY;
+		logMessage(TID_ACCEL "x=%6.2f, y=%6.2f, z=%6.2f\r\n", accelX, accelY, accelZ);
+		sumX = sumY = sumZ = 0;
 	}
 }
 
@@ -765,18 +769,19 @@ void SystemConductor(void const * argument)
   		continue;
   	lastTicks = currentTicks;
 
-		if (tasksState == SYS_TASKS_RUN)
-		{
-			tasksState = SYS_TASKS_PAUSE;
+  	if (tasksState == SYS_TASKS_RUNNING)
+  	{
+  		tasksState = SYS_TASKS_PAUSED;
+  		osSemaphoreRelease(accelerometerSemHandle);
 			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_SET);
-		}
-		else
-		{
-			tasksState = SYS_TASKS_RUN;
+  	}
+  	else
+  	{
+			tasksState = SYS_TASKS_RUNNING;
 			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_RESET);
 			osSignalSet(heartbeatHandle, SIG_RESUME);
-			osSignalSet(accelerometerHandle, SIG_RESUME);
-		}
+			osSemaphoreRelease(accelerometerSemHandle);
+  	}
   }
   /* USER CODE END 5 */
 }
