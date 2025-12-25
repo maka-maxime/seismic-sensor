@@ -759,19 +759,23 @@ void SystemConductor(void const * argument)
   		continue;
   	lastTicks = currentTicks;
 
-  	if (tasksState == SYS_TASKS_RUNNING)
+  	switch (tasksState)
   	{
+  	case SYS_TASKS_RUNNING:
   		tasksState = SYS_TASKS_PAUSED;
   		osSignalSet(heartbeatHandle, SIG_PAUSE);
   		osSemaphoreRelease(accelerometerSemHandle);
 			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_SET);
-  	}
-  	else
-  	{
+			break;
+  	case SYS_TASKS_PAUSED:
 			tasksState = SYS_TASKS_RUNNING;
 			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_RESET);
 			osSignalSet(heartbeatHandle, SIG_RESUME);
 			osSemaphoreRelease(accelerometerSemHandle);
+			break;
+  	default:
+  		logMessage(TID_SYS "Invalid task state - 0x%02X.\r\n", tasksState);
+  		Error_Handler();
   	}
   }
   /* USER CODE END 5 */
