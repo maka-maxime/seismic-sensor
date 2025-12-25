@@ -79,8 +79,9 @@ osMutexId uartMutexHandle;
 
 osSemaphoreId accelerometerSemHandle;
 
-#define SIG_BUTTON 0x00000010
-#define SIG_RESUME 0x00000100
+#define SIG_PAUSE  0x00000001
+#define SIG_RESUME 0x00000010
+#define SIG_BUTTON 0x00000100
 uint32_t tasksState = SYS_TASKS_PAUSED;
 
 #define ACCEL_AXES 3
@@ -613,28 +614,17 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void Heartbeat(void const * argument)
 {
-	osEvent event;
-	event = osSignalWait(SIG_RESUME, osWaitForever);
-	if (event.status != osEventSignal)
-	{
-		logMessage(TID_HEART "Unable to start task.\r\n");
-		Error_Handler();
-	}
-	HAL_TIM_OC_Start(&htim4, TIM_CHANNEL_2);
-	logMessage(TID_HEART "Started Heartbeat.\r\n");
+	logMessage(TID_HEART "Heartbeat ready.\r\n");
 	while (1)
 	{
-		if (tasksState == SYS_TASKS_PAUSED)
-		{
-			HAL_TIM_OC_Stop(&htim4, TIM_CHANNEL_2);
-			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
-			logMessage(TID_HEART "Task suspended.\r\n");
-			do
-				event = osSignalWait(SIG_RESUME, osWaitForever);
-			while (event.status != osEventSignal);
-			logMessage(TID_HEART "Task resumed.\r\n");
-			HAL_TIM_OC_Start(&htim4, TIM_CHANNEL_2);
-		}
+		osSignalWait(SIG_RESUME, osWaitForever);
+		HAL_TIM_OC_Start(&htim4, TIM_CHANNEL_2);
+		logMessage(TID_HEART "Task resumed.\r\n");
+
+		osSignalWait(SIG_PAUSE, osWaitForever);
+		HAL_TIM_OC_Stop(&htim4, TIM_CHANNEL_2);
+		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
+		logMessage(TID_HEART "Task suspended.\r\n");
 	}
 }
 
@@ -772,6 +762,7 @@ void SystemConductor(void const * argument)
   	if (tasksState == SYS_TASKS_RUNNING)
   	{
   		tasksState = SYS_TASKS_PAUSED;
+  		osSignalSet(heartbeatHandle, SIG_PAUSE);
   		osSemaphoreRelease(accelerometerSemHandle);
 			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_SET);
   	}
