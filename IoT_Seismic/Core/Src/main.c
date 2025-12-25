@@ -190,11 +190,11 @@ int main(void)
   systemConductorHandle = osThreadCreate(osThread(systemConductor), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  osThreadDef(heartbeat, Heartbeat, osPriorityNormal, 0, 256);
-  heartbeatHandle = osThreadCreate(osThread(heartbeat), NULL);
-
   osThreadDef(logger, Logger, osPriorityNormal, 0, 256);
   loggerHandle = osThreadCreate(osThread(logger), NULL);
+
+  osThreadDef(heartbeat, Heartbeat, osPriorityNormal, 0, 256);
+  heartbeatHandle = osThreadCreate(osThread(heartbeat), NULL);
 
   osThreadDef(accelerometer, Accelerometer, osPriorityNormal, 0, 256);
   accelerometerHandle = osThreadCreate(osThread(accelerometer), NULL);
