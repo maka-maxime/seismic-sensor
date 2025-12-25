@@ -40,16 +40,29 @@ typedef struct message
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ENDL "\r\n"
-
-#define TID_SYS   "<SYSTEM> "
-#define TID_HEART "<HEART>  "
-#define TID_LOGGR "<LOGGER> "
-#define TID_ACCEL "<ACCEL>  "
-
-#define SYS_DEBOUNCE_MSEC 100
-#define SYS_TASKS_RUNNING 0
-#define SYS_TASKS_PAUSED 1
+#define ACCEL_AXES              (3)
+#define ACCEL_FSR               (3330)
+#define ACCEL_SAMPLES           (ACCEL_AXES * ACCEL_SAMPLES_PER_AXIS)
+#define ACCEL_SAMPLES_PER_AXIS  (10)
+#define ACCEL_SENSITIVITY       (333)
+#define ACCEL_X_BIAS            (1670)
+#define ACCEL_Y_BIAS            (1655)
+#define ACCEL_Z_BIAS            (1715)
+#define ADC_MAX_VALUE           (4095)
+#define ENDL                    "\r\n"
+#define MAILQ_LENGTH            (0x08)
+#define MAILQ_GET_TIMEOUT       (osWaitForever)
+#define SIG_BUTTON              (0x00000001)
+#define SIG_PAUSE               (0x00000010)
+#define SIG_RESUME              (0x00000100)
+#define SYS_DEBOUNCE_MSEC       (100)
+#define SYS_TASKS_RUNNING       (0x00)
+#define SYS_TASKS_PAUSED        (0x01)
+#define TID_SYS                 "<SYSTEM> "
+#define TID_HEART               "<HEART>  "
+#define TID_LOGGR               "<LOGGER> "
+#define TID_ACCEL               "<ACCEL>  "
+#define UART_TIMEOUT            (100)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -74,27 +87,13 @@ osThreadId heartbeatHandle;
 osThreadId loggerHandle;
 osThreadId accelerometerHandle;
 
-#define MAILQ_LENGTH (0x08)
 osMailQId mailQueueHandle;
 
 osMutexId uartMutexHandle;
 
 osSemaphoreId accelerometerSemHandle;
 
-#define SIG_PAUSE  0x00000001
-#define SIG_RESUME 0x00000010
-#define SIG_BUTTON 0x00000100
 uint32_t tasksState = SYS_TASKS_PAUSED;
-
-#define ACCEL_AXES 3
-#define ACCEL_SAMPLES_PER_AXIS 10
-#define ACCEL_SAMPLES (ACCEL_AXES * ACCEL_SAMPLES_PER_AXIS)
-#define ACCEL_FSR 3330
-#define ACCEL_X_BIAS 1670
-#define ACCEL_Y_BIAS 1655
-#define ACCEL_Z_BIAS 1715
-#define ACCEL_SENSITIVITY 333
-#define ADC_MAX_VALUE 4095
 uint16_t accelDmaBuffer[ACCEL_SAMPLES] = {0x00};
 /* USER CODE END PV */
 
@@ -658,7 +657,7 @@ void Logger(void const * argument)
 	div_t div_result;
 	while (1)
 	{
-		event = osMailGet(mailQueueHandle, 1000);
+		event = osMailGet(mailQueueHandle, MAILQ_GET_TIMEOUT);
 		if (osEventMail != event.status)
 			continue;
 
@@ -667,8 +666,8 @@ void Logger(void const * argument)
 		snprintf(timestamp, 16, "[%8d.%03d] ", div_result.quot, div_result.rem);
 		message = (Message *)event.value.p;
 		osMutexWait(uartMutexHandle, osWaitForever);
-		HAL_UART_Transmit(&huart3, (uint8_t*)timestamp, 16, 100);
-		HAL_UART_Transmit(&huart3, (uint8_t*)message->text, message->length, 100);
+		HAL_UART_Transmit(&huart3, (uint8_t*)timestamp, 16, UART_TIMEOUT);
+		HAL_UART_Transmit(&huart3, (uint8_t*)message->text, message->length, UART_TIMEOUT);
 		osMutexRelease(uartMutexHandle);
 		osMailFree(mailQueueHandle, event.value.p);
 	}
