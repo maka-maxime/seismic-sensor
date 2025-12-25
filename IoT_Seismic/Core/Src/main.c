@@ -40,10 +40,12 @@ typedef struct message
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TID_SYS   "[SYSTEM]: "
-#define TID_HEART "[HEART ]: "
-#define TID_LOGGR "[LOGGER]: "
-#define TID_ACCEL "[ACCEL ]: "
+#define ENDL "\r\n"
+
+#define TID_SYS   "<SYSTEM> "
+#define TID_HEART "<HEART>  "
+#define TID_LOGGR "<LOGGER> "
+#define TID_ACCEL "<ACCEL>  "
 
 #define SYS_DEBOUNCE_MSEC 100
 #define SYS_TASKS_RUNNING 0
@@ -614,17 +616,17 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void Heartbeat(void const * argument)
 {
-	logMessage(TID_HEART "Heartbeat ready.\r\n");
+	logMessage(TID_HEART "Heartbeat ready." ENDL);
 	while (1)
 	{
 		osSignalWait(SIG_RESUME, osWaitForever);
 		HAL_TIM_OC_Start(&htim4, TIM_CHANNEL_2);
-		logMessage(TID_HEART "Task resumed.\r\n");
+		logMessage(TID_HEART "Task resumed." ENDL);
 
 		osSignalWait(SIG_PAUSE, osWaitForever);
 		HAL_TIM_OC_Stop(&htim4, TIM_CHANNEL_2);
 		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
-		logMessage(TID_HEART "Task suspended.\r\n");
+		logMessage(TID_HEART "Task suspended." ENDL);
 	}
 }
 
@@ -648,17 +650,24 @@ osStatus logMessage(const char *__restrict format, ...)
 
 void Logger(void const * argument)
 {
-	logMessage(TID_LOGGR "Started Logger.\r\n");
+	logMessage(TID_LOGGR "Started Logger." ENDL);
 	osEvent event = {0x00};
 	Message *message;
+	char timestamp[16];
+	uint32_t ticks;
+	div_t div_result;
 	while (1)
 	{
 		event = osMailGet(mailQueueHandle, 1000);
 		if (osEventMail != event.status)
 			continue;
 
+		ticks = osKernelSysTick();
+		div_result = div(ticks, osKernelSysTickFrequency);
+		snprintf(timestamp, 16, "[%8d.%03d] ", div_result.quot, div_result.rem);
 		message = (Message *)event.value.p;
 		osMutexWait(uartMutexHandle, osWaitForever);
+		HAL_UART_Transmit(&huart3, (uint8_t*)timestamp, 16, 100);
 		HAL_UART_Transmit(&huart3, (uint8_t*)message->text, message->length, 100);
 		osMutexRelease(uartMutexHandle);
 		osMailFree(mailQueueHandle, event.value.p);
@@ -680,7 +689,7 @@ void Accelerometer(void const * argument)
 	float accelZ;
 	uint8_t bufferIndex = 0;
 
-	logMessage(TID_ACCEL "Accelerometer ready.\r\n");
+	logMessage(TID_ACCEL "Accelerometer ready." ENDL);
 	while (1)
 	{
 		osSemaphoreWait(accelerometerSemHandle, osWaitForever);
@@ -688,7 +697,7 @@ void Accelerometer(void const * argument)
 		if (tasksState == SYS_TASKS_PAUSED)
 		{
 			HAL_TIM_Base_Stop_IT(&htim6);
-			logMessage(TID_ACCEL "Task suspended.\r\n");
+			logMessage(TID_ACCEL "Task suspended." ENDL);
 			continue;
 		}
 
@@ -696,7 +705,7 @@ void Accelerometer(void const * argument)
 		if (htim6.State == HAL_TIM_STATE_READY)
 		{
 			HAL_TIM_Base_Start_IT(&htim6);
-			logMessage(TID_ACCEL "Task resumed.\r\n");
+			logMessage(TID_ACCEL "Task resumed." ENDL);
 			// Wait until the next interrupt, DMA transfer may not be done after resume.
 			osSemaphoreWait(accelerometerSemHandle, osWaitForever);
 		}
@@ -713,7 +722,7 @@ void Accelerometer(void const * argument)
 		accelX = (((float)sumX * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_X_BIAS) / ACCEL_SENSITIVITY;
 		accelY = (((float)sumY * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Y_BIAS) / ACCEL_SENSITIVITY;
 		accelZ = (((float)sumZ * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Z_BIAS) / ACCEL_SENSITIVITY;
-		logMessage(TID_ACCEL "x=%6.2f, y=%6.2f, z=%6.2f\r\n", accelX, accelY, accelZ);
+		logMessage(TID_ACCEL "x=%6.2f, y=%6.2f, z=%6.2f" ENDL, accelX, accelY, accelZ);
 		sumX = sumY = sumZ = 0;
 	}
 }
@@ -742,7 +751,7 @@ void SystemConductor(void const * argument)
   /* Infinite loop */
   HAL_ADC_Start_DMA(&hadc3, (uint32_t *)accelDmaBuffer, ACCEL_SAMPLES);
   HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_SET);
-  logMessage(TID_SYS "Started System Conductor.\r\n");
+  logMessage(TID_SYS "Started System Conductor." ENDL);
   osEvent event;
   uint32_t lastTicks = 0;
   uint32_t currentTicks;
@@ -774,7 +783,7 @@ void SystemConductor(void const * argument)
 			osSemaphoreRelease(accelerometerSemHandle);
 			break;
   	default:
-  		logMessage(TID_SYS "Invalid task state - 0x%02X.\r\n", tasksState);
+  		logMessage(TID_SYS "Invalid task state - 0x%02X." ENDL, tasksState);
   		Error_Handler();
   	}
   }
