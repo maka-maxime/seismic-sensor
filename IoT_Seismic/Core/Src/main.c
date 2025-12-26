@@ -26,6 +26,9 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+
+#include "lwip/sockets.h"
+#include "lwip/netif.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,6 +39,11 @@ typedef struct message
 	uint32_t length;
 	char text[MESSAGE_TEXT_MAXLEN];
 } Message;
+
+typedef enum net_msg_type
+{
+	NET_MSG_PRESENCE = 0x00
+} NetMessageType;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -49,10 +57,23 @@ typedef struct message
 #define ACCEL_Y_BIAS            (1655)
 #define ACCEL_Z_BIAS            (1715)
 #define ADC_MAX_VALUE           (4095)
+#define BROAD_ERROR_DELAY       (1000)
+#define BROAD_PAYLOAD_BUFLEN    (128)
+#define BROAD_PORT              (12345)
+#define BROAD_SEND_DELAY        (10000)
 #define ENDL                    "\r\n"
+#define ETH_LINK_DOWN           (0)
+#define ETH_LINK_PAUSED         (2)
+#define ETH_LINK_POLLING_DELAY  (200)
+#define ETH_LINK_STARTUP_DELAY  (2000)
+#define ETH_LINK_UP             (1)
 #define MAILQ_LENGTH            (0x08)
 #define MAILQ_GET_TIMEOUT       (osWaitForever)
+#define NODE_ID                 "nucleo-03"
+#define NODE_IP                 "192.168.1.183"
 #define SIG_BUTTON              (0x00000001)
+#define SIG_LWIP                (0x00000002)
+#define SIG_LINK_UP             (0x00000004)
 #define SIG_PAUSE               (0x00000010)
 #define SIG_RESUME              (0x00000100)
 #define SYS_DEBOUNCE_MSEC       (100)
@@ -62,6 +83,8 @@ typedef struct message
 #define TID_HEART               "<HEART>  "
 #define TID_LOGGR               "<LOGGER> "
 #define TID_ACCEL               "<ACCEL>  "
+#define TID_ETH                 "<ETHNET> "
+#define TID_BROAD               "<BROAD>  "
 #define UART_TIMEOUT            (100)
 /* USER CODE END PD */
 
@@ -86,6 +109,8 @@ osThreadId systemConductorHandle;
 osThreadId heartbeatHandle;
 osThreadId loggerHandle;
 osThreadId accelerometerHandle;
+osThreadId ethernetLinkMonitorHandle;
+osThreadId networkBroadcastHandle;
 
 osMailQId mailQueueHandle;
 
@@ -93,8 +118,17 @@ osMutexId uartMutexHandle;
 
 osSemaphoreId accelerometerSemHandle;
 
-uint32_t tasksState = SYS_TASKS_PAUSED;
+uint8_t tasksState = SYS_TASKS_PAUSED;
+uint8_t ethernetLinkState = ETH_LINK_DOWN;
 uint16_t accelDmaBuffer[ACCEL_SAMPLES] = {0x00};
+const char *net_presence_format =
+		"{\n"
+		"  \"type\": \"presence\",\n"
+		"  \"id\": \"" NODE_ID "\",\n"
+		"  \"ip\": \"" NODE_IP "\",\n"
+		"  \"timestamp\": \"%s\"\n"
+		"}";
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -112,8 +146,11 @@ void SystemConductor(void const * argument);
 void Heartbeat(void const * argument);
 void Logger(void const * argument);
 void Accelerometer(void const * argument);
+void EthernetLinkMonitor(void const * argument);
+void NetworkBroadcast(void const * argument);
 
 osStatus logMessage(const char *__restrict format, ...);
+ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t bufferSize);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -197,6 +234,13 @@ int main(void)
 
   osThreadDef(accelerometer, Accelerometer, osPriorityNormal, 0, 256);
   accelerometerHandle = osThreadCreate(osThread(accelerometer), NULL);
+
+  osThreadDef(ethernetLinkMonitor, EthernetLinkMonitor, osPriorityNormal, 0, 256);
+  ethernetLinkMonitorHandle = osThreadCreate(osThread(ethernetLinkMonitor), NULL);
+
+  osThreadDef(networkBroadcast, NetworkBroadcast, osPriorityNormal, 0, 512);
+  networkBroadcastHandle = osThreadCreate(osThread(networkBroadcast), NULL);
+
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
@@ -726,6 +770,115 @@ void Accelerometer(void const * argument)
 	}
 }
 
+void EthernetLinkMonitor(void const * argument)
+{
+	uint8_t currentLinkState = ETH_LINK_DOWN;
+
+	osSignalWait(SIG_LWIP, osWaitForever);
+	// Wait for LWIP to finalise its initialisation.
+	osDelay(ETH_LINK_STARTUP_DELAY);
+
+	logMessage(TID_ETH "Ethernet link monitor ready." ENDL);
+  while (1)
+  {
+  	currentLinkState = netif_is_link_up(netif_default);
+
+  	if (tasksState == SYS_TASKS_PAUSED)
+  		currentLinkState = ETH_LINK_PAUSED;
+
+  	if (currentLinkState == ethernetLinkState)
+  	{
+  		osDelay(ETH_LINK_POLLING_DELAY);
+  		continue;
+  	}
+
+  	ethernetLinkState = currentLinkState;
+  	switch (ethernetLinkState)
+  	{
+  	case ETH_LINK_DOWN:
+  		logMessage(TID_ETH "Link is down." ENDL);
+  		break;
+  	case ETH_LINK_UP:
+  		logMessage(TID_ETH "Link is up." ENDL);
+  		osSignalSet(networkBroadcastHandle, SIG_LINK_UP);
+  		break;
+  	case ETH_LINK_PAUSED:
+  		logMessage(TID_ETH "Network paused." ENDL);
+  		osSignalWait(SIG_RESUME, osWaitForever);
+  		logMessage(TID_ETH "Network resumed." ENDL);
+  		break;
+  	}
+  }
+}
+
+ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t bufferSize)
+{
+	if (messageBuffer == NULL)
+		return -1;
+
+	// TODO: fetch timestamp with external RTC (step-3)
+	const char *timestamp = "2025-12-26T12:31:42Z";
+
+	switch (type)
+	{
+	case NET_MSG_PRESENCE:
+		return snprintf(messageBuffer, bufferSize, net_presence_format, timestamp);
+	default:
+		logMessage("<ERROR>  Net message type invalid - 0x%08X" ENDL, type);
+		return -1;
+	}
+}
+
+void NetworkBroadcast(void const * argument)
+{
+  int32_t hBroadcast = -1;
+  ssize_t bytesSent;
+  struct sockaddr_in broadcast_addr = {0};
+  broadcast_addr.sin_family = AF_INET;
+  broadcast_addr.sin_port = htons(BROAD_PORT);
+  broadcast_addr.sin_addr.s_addr = IPADDR_BROADCAST;
+
+  char payload[BROAD_PAYLOAD_BUFLEN];
+  ssize_t formattedLength = 0;
+
+  while (1)
+  {
+  	while (hBroadcast < 0)
+  	{
+  		if (ethernetLinkState != ETH_LINK_UP)
+  			osSignalWait(SIG_LINK_UP, osWaitForever);
+
+      hBroadcast = lwip_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+      if (hBroadcast == -1)
+      {
+      	logMessage(TID_BROAD "Unable to create a socket - ERRNO:%d." ENDL, errno);
+      	osDelay(BROAD_ERROR_DELAY);
+      	continue;
+      }
+
+			int32_t enable = 0x01;
+			if (setsockopt(hBroadcast, SOL_SOCKET, SO_BROADCAST, &enable, sizeof(enable)))
+			{
+				logMessage(TID_BROAD "Unable to configure broadcast - ERRNO:%d" ENDL, errno);
+				close(hBroadcast);
+				hBroadcast = -1;
+				osDelay(BROAD_ERROR_DELAY);
+			}
+  	}
+
+  	bytesSent = 1;
+  	while ((ethernetLinkState == ETH_LINK_UP) && (bytesSent > 0))
+  	{
+  		formattedLength = formatNetMessage(NET_MSG_PRESENCE, payload, BROAD_PAYLOAD_BUFLEN-1);
+  		bytesSent = sendto(hBroadcast, payload, formattedLength, 0, (struct sockaddr *)&broadcast_addr, sizeof(struct sockaddr_in));
+
+  		osDelay(BROAD_SEND_DELAY);
+  	}
+  	close(hBroadcast);
+  	hBroadcast = -1;
+  }
+}
+
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
 	if (GPIO_Pin == USER_Btn_Pin)
@@ -747,10 +900,11 @@ void SystemConductor(void const * argument)
   /* init code for LWIP */
   MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
-  /* Infinite loop */
+  osSignalSet(ethernetLinkMonitorHandle, SIG_LWIP);
   HAL_ADC_Start_DMA(&hadc3, (uint32_t *)accelDmaBuffer, ACCEL_SAMPLES);
   HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_SET);
   logMessage(TID_SYS "Started System Conductor." ENDL);
+  /* Infinite loop */
   osEvent event;
   uint32_t lastTicks = 0;
   uint32_t currentTicks;
@@ -780,6 +934,7 @@ void SystemConductor(void const * argument)
 			HAL_GPIO_WritePin(LD_PAUSE_GPIO_Port, LD_PAUSE_Pin, GPIO_PIN_RESET);
 			osSignalSet(heartbeatHandle, SIG_RESUME);
 			osSemaphoreRelease(accelerometerSemHandle);
+			osSignalSet(ethernetLinkMonitorHandle, SIG_RESUME);
 			break;
   	default:
   		logMessage(TID_SYS "Invalid task state - 0x%02X." ENDL, tasksState);
