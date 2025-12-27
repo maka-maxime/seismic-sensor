@@ -847,6 +847,7 @@ void NetworkBroadcast(void const * argument)
 {
   int32_t hBroadcast = -1;
   ssize_t bytesSent;
+  uint32_t previousTimeStamp;
   struct sockaddr_in broadcast_addr = {0};
   broadcast_addr.sin_family = AF_INET;
   broadcast_addr.sin_port = htons(BROAD_PORT);
@@ -882,12 +883,13 @@ void NetworkBroadcast(void const * argument)
   	}
 
   	bytesSent = 1;
+  	previousTimeStamp = osKernelSysTick();
   	while ((ethernetLinkState == ETH_LINK_UP) && (bytesSent > 0))
   	{
   		formattedLength = formatNetMessage(NET_MSG_PRESENCE, payload, BROAD_PAYLOAD_BUFLEN-1);
   		bytesSent = sendto(hBroadcast, payload, formattedLength, 0, (struct sockaddr *)&broadcast_addr, sizeof(struct sockaddr_in));
 
-  		osDelay(BROAD_SEND_DELAY);
+  		osDelayUntil(&previousTimeStamp, BROAD_SEND_DELAY);
   	}
   	close(hBroadcast);
   	hBroadcast = -1;
