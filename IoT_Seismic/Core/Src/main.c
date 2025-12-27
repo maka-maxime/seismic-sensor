@@ -61,6 +61,8 @@ typedef enum net_msg_type
 #define BROAD_PAYLOAD_BUFLEN    (128)
 #define BROAD_PORT              (12345)
 #define BROAD_SEND_DELAY        (10000)
+#define DEBUG_MEMORY            (1)
+#define DEBUG_POLLING_DELAY     (10000)
 #define ENDL                    "\r\n"
 #define ETH_LINK_DOWN           (0)
 #define ETH_LINK_PAUSED         (2)
@@ -80,6 +82,7 @@ typedef enum net_msg_type
 #define SYS_TASKS_RUNNING       (0x00)
 #define SYS_TASKS_PAUSED        (0x01)
 #define TID_SYS                 "<SYSTEM> "
+#define TID_DEBUG               "<MEMORY>"
 #define TID_HEART               "<HEART>  "
 #define TID_LOGGR               "<LOGGER> "
 #define TID_ACCEL               "<ACCEL>  "
@@ -111,6 +114,10 @@ osThreadId loggerHandle;
 osThreadId accelerometerHandle;
 osThreadId ethernetLinkMonitorHandle;
 osThreadId networkBroadcastHandle;
+
+#if DEBUG_MEMORY
+osThreadId memoryAnalyserHandle;
+#endif
 
 osMailQId mailQueueHandle;
 
@@ -148,6 +155,9 @@ void Logger(void const * argument);
 void Accelerometer(void const * argument);
 void EthernetLinkMonitor(void const * argument);
 void NetworkBroadcast(void const * argument);
+#if DEBUG_MEMORY
+void MemoryAnalyser(void const * argument);
+#endif
 
 osStatus logMessage(const char *__restrict format, ...);
 ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t bufferSize);
@@ -226,21 +236,25 @@ int main(void)
   systemConductorHandle = osThreadCreate(osThread(systemConductor), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  osThreadDef(logger, Logger, osPriorityNormal, 0, 256);
+  osThreadDef(logger, Logger, osPriorityNormal, 0, 128);
   loggerHandle = osThreadCreate(osThread(logger), NULL);
 
-  osThreadDef(heartbeat, Heartbeat, osPriorityNormal, 0, 256);
+  osThreadDef(heartbeat, Heartbeat, osPriorityNormal, 0, 128);
   heartbeatHandle = osThreadCreate(osThread(heartbeat), NULL);
 
   osThreadDef(accelerometer, Accelerometer, osPriorityNormal, 0, 256);
   accelerometerHandle = osThreadCreate(osThread(accelerometer), NULL);
 
-  osThreadDef(ethernetLinkMonitor, EthernetLinkMonitor, osPriorityNormal, 0, 256);
+  osThreadDef(ethernetLinkMonitor, EthernetLinkMonitor, osPriorityNormal, 0, 128);
   ethernetLinkMonitorHandle = osThreadCreate(osThread(ethernetLinkMonitor), NULL);
 
-  osThreadDef(networkBroadcast, NetworkBroadcast, osPriorityNormal, 0, 512);
+  osThreadDef(networkBroadcast, NetworkBroadcast, osPriorityNormal, 0, 384);
   networkBroadcastHandle = osThreadCreate(osThread(networkBroadcast), NULL);
 
+#if DEBUG_MEMORY
+  osThreadDef(memoryAnalyser, MemoryAnalyser, osPriorityNormal, 0, 256);
+  memoryAnalyserHandle = osThreadCreate(osThread(memoryAnalyser), NULL);
+#endif
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
@@ -841,6 +855,7 @@ void NetworkBroadcast(void const * argument)
   char payload[BROAD_PAYLOAD_BUFLEN];
   ssize_t formattedLength = 0;
 
+  logMessage(TID_BROAD "Network broadcast ready."ENDL);
   while (1)
   {
   	while (hBroadcast < 0)
@@ -878,6 +893,34 @@ void NetworkBroadcast(void const * argument)
   	hBroadcast = -1;
   }
 }
+
+#if DEBUG_MEMORY
+void MemoryAnalyser(void const * argument)
+{
+	logMessage(TID_DEBUG "Memory analyser ready." ENDL);
+  while (1)
+  {
+  	if (tasksState == SYS_TASKS_PAUSED)
+  	{
+  		osSignalWait(SIG_RESUME, osWaitForever);
+  	}
+
+  	logMessage(
+  			"Stack high watermarks in 4-byte words: " ENDL
+				"\tSYS: %3d" ENDL "\tLOG: %3d" ENDL "\tLED: %3d" ENDL
+				"\tADC: %3d" ENDL "\tNET: %3d" ENDL "\tUDP: %3d" ENDL,
+				(uint32_t)uxTaskGetStackHighWaterMark(systemConductorHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(loggerHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(heartbeatHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(accelerometerHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(ethernetLinkMonitorHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(networkBroadcastHandle)
+    );
+
+    osDelay(DEBUG_POLLING_DELAY);
+  }
+}
+#endif
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
@@ -935,6 +978,9 @@ void SystemConductor(void const * argument)
 			osSignalSet(heartbeatHandle, SIG_RESUME);
 			osSemaphoreRelease(accelerometerSemHandle);
 			osSignalSet(ethernetLinkMonitorHandle, SIG_RESUME);
+#if DEBUG_MEMORY
+			osSignalSet(memoryAnalyserHandle, SIG_RESUME);
+#endif
 			break;
   	default:
   		logMessage(TID_SYS "Invalid task state - 0x%02X." ENDL, tasksState);
