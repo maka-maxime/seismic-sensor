@@ -1,8 +1,4 @@
 class Message:
-    OKAY = {
-        'type':'okay'
-    }
-    
     PRESENCE = {
         'type':'presence',
         'id':'nucleo-03',
@@ -10,29 +6,14 @@ class Message:
         'timestamp':'2026-01-04T10:05:42Z'
     }
 
-    STATUS = {
-        'type':'status',
-        'payload':{
-            'id':'nucleo-03',
-            'ip':'192.168.1.183',
-            'last_sync':'2026-01-04T10:05:42Z'
-        }
-    }
-
     DATA = {
         'type':'data',
         'id':'nucleo-03',
         'timestamp':'2026-01-04T10:08:17Z',
-        'status':'normal',
         'acceleration':{
             'x':0.13,
             'y':-0.02,
             'z':0.97
-        }
-    }
-
-    SYNC = {
-        'type':'sync',
-        'id':'nucleo-03',
-        'timestamp':'2026-01-04T10:09:27Z'
+        },
+        'status':'normal'
     }

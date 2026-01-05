@@ -50,16 +50,10 @@ if __name__ == "__main__":
 
         if message_type == 'DATA':
             message = Message.DATA
-        elif message_type == 'STATUS':
-            message = Message.STATUS
-        elif message_type == 'SYNC':
-            message = Message.SYNC
         elif message_type == 'PRESENCE':
             message = Message.PRESENCE
-        elif message_type == 'OKAY':
-            message = Message.OKAY
         else:
-            print('Message type invalid. Must be one of: DATA, STATUS, SYNC, PRESENCE, OKAY')
+            print('Message type invalid. Must be one of: DATA, PRESENCE')
             sys.exit(1)
 
         client = Client(server_ip, server_port)
