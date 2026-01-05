@@ -1,7 +1,5 @@
 #!python
 import socket
-import json
-from message import Message
 
 class Server:
     def __init__(self, port):
@@ -31,7 +29,7 @@ class Server:
             self.__service.close()
   
 if __name__ == "__main__":
-    server = Server(50000)
+    server = Server(12345)
     data = None
     try:
         while True:
@@ -41,11 +39,7 @@ if __name__ == "__main__":
                 print(f'Peer found: {server.peer}')
                 try:
                     data = server.receive()
-                    while data:
-                        print(f'Data received: {data.decode('utf-8')}')
-                        server.send(json.dumps(Message.OKAY).encode('utf-8'))
-                        data = server.receive()
-                            
+                    print(f'Data received: {data.decode('utf-8')}')                      
                 except Exception:
                     print('Exception')
             except socket.timeout:
