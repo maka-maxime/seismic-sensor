@@ -62,11 +62,14 @@ typedef enum net_msg_type
 #define BROAD_PAYLOAD_BUFLEN    (128)
 #define BROAD_PORT              (12345)
 #define BROAD_SEND_DELAY        (10000)
+#define CLIENT_BURST_DELAY      (10000)
 #define CLIENT_CONNECT_DELAY    (500)
+#define CLIENT_CONNECT_TIMEOUT  (500000)
 #define CLIENT_EOC_DELAY        (75)
 #define CLIENT_FLAGS            (0)
+#define CLIENT_MAX_REMOTES      (20)
 #define CLIENT_MAX_RETRIES      (4)
-#define CLIENT_NEXT_DELAY       (4000)
+#define CLIENT_NEXT_DELAY       (500)
 #define CLIENT_POLL_REMOTES     (2000)
 #define CLIENT_REMOTE_ADDRESS   "192.168.1.174"
 #define CLIENT_TXBUFFER_LEN     (192)
@@ -78,7 +81,7 @@ typedef enum net_msg_type
 #define ETH_LINK_POLLING_DELAY  (200)
 #define ETH_LINK_STARTUP_DELAY  (2000)
 #define ETH_LINK_UP             (1)
-#define MAILQ_LENGTH            (0x08)
+#define MAILQ_LENGTH            (0x10)
 #define MAILQ_GET_TIMEOUT       (osWaitForever)
 #define NODE_ID                 "nucleo-03"
 #define NODE_IP                 "192.168.1.183"
@@ -167,6 +170,9 @@ const char *net_data_format =
 		  "},"
 			"\"status\":\"%s\""
 		"}";
+
+ip4_addr_t remoteNodes[CLIENT_MAX_REMOTES] = {0};
+uint8_t remoteCount = 0;
 
 /* USER CODE END PV */
 
@@ -295,6 +301,9 @@ int main(void)
   osThreadDef(memoryAnalyser, MemoryAnalyser, osPriorityNormal, 0, 256);
   memoryAnalyserHandle = osThreadCreate(osThread(memoryAnalyser), NULL);
 #endif
+
+  inet_pton(AF_INET, CLIENT_REMOTE_ADDRESS, &remoteNodes[0]);
+  remoteCount = 1;
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
@@ -1162,7 +1171,7 @@ int32_t connectWithTimeout(int32_t hSocket, struct sockaddr *remoteAddress, sock
 {
   int32_t status;
   fd_set fdSet;
-  struct timeval tv = {.tv_sec = 0, .tv_usec = 500000};
+  struct timeval tv = {.tv_sec = 0, .tv_usec = CLIENT_CONNECT_TIMEOUT};
 
   status = connect(hSocket, remoteAddress, socksize);
   if (status == 0)
@@ -1191,6 +1200,19 @@ int32_t connectWithTimeout(int32_t hSocket, struct sockaddr *remoteAddress, sock
   return 0;
 }
 
+int8_t getNextRegisteredRemote(int8_t currentRemote)
+{
+	int8_t nextRemote = currentRemote+1;
+  while (nextRemote < remoteCount)
+  {
+  	if (remoteNodes[nextRemote].addr != 0)
+  		return nextRemote;
+  	nextRemote++;
+  }
+
+  return -1;
+}
+
 void NetworkClient(void const * argument)
 {
 	int32_t hSocket = -1;
@@ -1200,15 +1222,15 @@ void NetworkClient(void const * argument)
 	struct sockaddr_in addrServer = {0};
 	char remoteAddress[INET_ADDRSTRLEN] = {0};
 	char txBuffer[CLIENT_TXBUFFER_LEN] = {0};
+	int8_t currentRemote = -1;
 
 	addrServer.sin_family = AF_INET;
 	addrServer.sin_port = htons(SERVER_LISTEN_PORT);
-  inet_pton(AF_INET, CLIENT_REMOTE_ADDRESS, &addrServer.sin_addr);
 
   logMessage(TID_CLIENT "Client ready." ENDL);
   while (1)
   {
-    while (hSocket < 0)
+  	while (hSocket < 0)
     {
     	if (ethernetLinkState != ETH_LINK_UP)
     	{
@@ -1216,6 +1238,15 @@ void NetworkClient(void const * argument)
     		osSignalWait(SIG_LINK_UP, osWaitForever);
     		logMessage(TID_CLIENT "Client resumed." ENDL);
     	}
+
+  		currentRemote = getNextRegisteredRemote(currentRemote);
+  		if (currentRemote == -1)
+  		{
+  			logMessage(TID_CLIENT "Looped on all registered nodes." ENDL);
+  			osDelay(CLIENT_BURST_DELAY);
+  			continue;
+  		}
+  		addrServer.sin_addr.s_addr = remoteNodes[currentRemote].addr;
 
   		logMessage(TID_CLIENT "Attempting to open a socket..." ENDL);
   		// protocol argument is discarded
@@ -1247,7 +1278,7 @@ void NetworkClient(void const * argument)
   		}
     }
 
-    logMessage(TID_CLIENT "Attempting to connect to a server..." ENDL);
+    logMessage(TID_CLIENT "Attempting to connect to node %d/%d..." ENDL, currentRemote+1, remoteCount);
 
     retries = 0;
 		while ((retries < CLIENT_MAX_RETRIES) && (ethernetLinkState == ETH_LINK_UP))
@@ -1262,13 +1293,14 @@ void NetworkClient(void const * argument)
 
 		if ((retries == CLIENT_MAX_RETRIES) || (ethernetLinkState != ETH_LINK_UP))
 		{
+			logMessage(TID_CLIENT "Unable to connect to node %d/%d." ENDL, currentRemote+1, remoteCount);
 			close(hSocket);
 			hSocket = -1;
 			continue;
 		}
 
 		inet_ntop(AF_INET, &addrServer.sin_addr, remoteAddress, INET_ADDRSTRLEN);
-		logMessage(TID_CLIENT "Connected to %s:%d." ENDL, remoteAddress, ntohs(addrServer.sin_port));
+		logMessage(TID_CLIENT "Connected to node %d/%d - %s:%d." ENDL, currentRemote+1, remoteCount, remoteAddress, ntohs(addrServer.sin_port));
 		formatNetMessage(NET_MSG_DATA, txBuffer, CLIENT_TXBUFFER_LEN);
 		status = send(hSocket, txBuffer, strlen(txBuffer), CLIENT_FLAGS);
 		if (status < 0)
