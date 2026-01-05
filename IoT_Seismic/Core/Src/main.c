@@ -42,7 +42,8 @@ typedef struct message
 
 typedef enum net_msg_type
 {
-	NET_MSG_PRESENCE = 0x00
+	NET_MSG_PRESENCE = 0x00,
+	NET_MSG_DATA = 0x01
 } NetMessageType;
 /* USER CODE END PTD */
 
@@ -61,6 +62,14 @@ typedef enum net_msg_type
 #define BROAD_PAYLOAD_BUFLEN    (128)
 #define BROAD_PORT              (12345)
 #define BROAD_SEND_DELAY        (10000)
+#define CLIENT_CONNECT_DELAY    (500)
+#define CLIENT_EOC_DELAY        (75)
+#define CLIENT_FLAGS            (0)
+#define CLIENT_MAX_RETRIES      (4)
+#define CLIENT_NEXT_DELAY       (4000)
+#define CLIENT_POLL_REMOTES     (2000)
+#define CLIENT_REMOTE_ADDRESS   "192.168.1.174"
+#define CLIENT_TXBUFFER_LEN     (192)
 #define DEBUG_MEMORY            (1)
 #define DEBUG_POLLING_DELAY     (10000)
 #define ENDL                    "\r\n"
@@ -76,7 +85,6 @@ typedef enum net_msg_type
 #define SERVER_ACCEPT_POLLING   (200)
 #define SERVER_BACKLOG          (1)
 #define SERVER_FLAGS            (0)
-#define SERVER_ERROR_DELAY      (1000)
 #define SERVER_IO_BUFFER_LEN    (192)
 #define SERVER_LISTEN_ADDR      "0.0.0.0"
 #define SERVER_LISTEN_PORT      (12345)
@@ -88,6 +96,7 @@ typedef enum net_msg_type
 #define SYS_DEBOUNCE_MSEC       (100)
 #define SYS_TASKS_RUNNING       (0x00)
 #define SYS_TASKS_PAUSED        (0x01)
+#define TCP_ERROR_DELAY         (1000)
 #define TID_SYS                 "<SYSTEM> "
 #define TID_DEBUG               "<MEMORY> "
 #define TID_HEART               "<HEART>  "
@@ -96,6 +105,7 @@ typedef enum net_msg_type
 #define TID_ETH                 "<ETHNET> "
 #define TID_BROAD               "<BROAD>  "
 #define TID_SERVER              "<SERVER> "
+#define TID_CLIENT              "<CLIENT> "
 #define UART_TIMEOUT            (100)
 /* USER CODE END PD */
 
@@ -123,7 +133,7 @@ osThreadId accelerometerHandle;
 osThreadId ethernetLinkMonitorHandle;
 osThreadId networkBroadcastHandle;
 osThreadId networkServerHandle;
-
+osThreadId networkClientHandle;
 #if DEBUG_MEMORY
 osThreadId memoryAnalyserHandle;
 #endif
@@ -138,11 +148,24 @@ uint8_t tasksState = SYS_TASKS_PAUSED;
 uint8_t ethernetLinkState = ETH_LINK_DOWN;
 uint16_t accelDmaBuffer[ACCEL_SAMPLES] = {0x00};
 const char *net_presence_format =
-		"{\n"
-		"  \"type\": \"presence\",\n"
-		"  \"id\": \"" NODE_ID "\",\n"
-		"  \"ip\": \"" NODE_IP "\",\n"
-		"  \"timestamp\": \"%s\"\n"
+		"{"
+		  "\"type\": \"presence\","
+		  "\"id\": \"" NODE_ID "\","
+		  "\"ip\": \"" NODE_IP "\","
+		  "\"timestamp\": \"%s\""
+		"}";
+
+const char *net_data_format =
+		"{"
+		  "\"type\":\"data\","
+		  "\"id\":\"" NODE_ID "\","
+		  "\"timestamp\":\"%s\","
+		  "\"acceleration\":{"
+		    "\"x\":%.2f,"
+		    "\"y\":%.2f,"
+		    "\"z\":%.2f"
+		  "},"
+			"\"status\":\"%s\""
 		"}";
 
 /* USER CODE END PV */
@@ -165,6 +188,7 @@ void Accelerometer(void const * argument);
 void EthernetLinkMonitor(void const * argument);
 void NetworkBroadcast(void const * argument);
 void NetworkServer(void const * argument);
+void NetworkClient(void const * argument);
 #if DEBUG_MEMORY
 void MemoryAnalyser(void const * argument);
 #endif
@@ -264,6 +288,9 @@ int main(void)
 
   osThreadDef(networkServer, NetworkServer, osPriorityNormal, 0, 384);
   networkServerHandle = osThreadCreate(osThread(networkServer), NULL);
+
+  osThreadDef(networkClient, NetworkClient, osPriorityNormal, 0, 384);
+  networkClientHandle = osThreadCreate(osThread(networkClient), NULL);
 #if DEBUG_MEMORY
   osThreadDef(memoryAnalyser, MemoryAnalyser, osPriorityNormal, 0, 256);
   memoryAnalyserHandle = osThreadCreate(osThread(memoryAnalyser), NULL);
@@ -792,7 +819,10 @@ void Accelerometer(void const * argument)
 		accelX = (((float)sumX * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_X_BIAS) / ACCEL_SENSITIVITY;
 		accelY = (((float)sumY * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Y_BIAS) / ACCEL_SENSITIVITY;
 		accelZ = (((float)sumZ * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Z_BIAS) / ACCEL_SENSITIVITY;
-		logMessage(TID_ACCEL "x=%6.2f, y=%6.2f, z=%6.2f" ENDL, accelX, accelY, accelZ);
+		UNUSED(accelX);
+		UNUSED(accelY);
+		UNUSED(accelZ);
+		//logMessage(TID_ACCEL "x=%6.2f, y=%6.2f, z=%6.2f" ENDL, accelX, accelY, accelZ);
 		sumX = sumY = sumZ = 0;
 	}
 }
@@ -829,6 +859,7 @@ void EthernetLinkMonitor(void const * argument)
   		logMessage(TID_ETH "Link is up." ENDL);
   		osSignalSet(networkBroadcastHandle, SIG_LINK_UP);
   		osSignalSet(networkServerHandle, SIG_LINK_UP);
+  		osSignalSet(networkClientHandle, SIG_LINK_UP);
   		break;
   	case ETH_LINK_PAUSED:
   		logMessage(TID_ETH "Network paused." ENDL);
@@ -851,6 +882,8 @@ ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t buffer
 	{
 	case NET_MSG_PRESENCE:
 		return snprintf(messageBuffer, bufferSize, net_presence_format, timestamp);
+	case NET_MSG_DATA:
+		return snprintf(messageBuffer, bufferSize, net_data_format, timestamp, 0.13f, -0.20f, 0.97f, "normal");
 	default:
 		logMessage("<ERROR>  Net message type invalid - 0x%08X" ENDL, type);
 		return -1;
@@ -1007,7 +1040,7 @@ void NetworkServer(void const * argument)
   		if (hListen == -1)
   		{
   			logMessage(TID_SERVER "Unable to open a TCP socket - errno %03d" ENDL, errno);
-  			osDelay(SERVER_ERROR_DELAY);
+  			osDelay(TCP_ERROR_DELAY);
   			continue;
   		}
 
@@ -1016,7 +1049,7 @@ void NetworkServer(void const * argument)
   		{
   			logMessage(TID_SERVER "Unable to retrieve socket flags - errno %03d" ENDL, errno);
   			close(hListen);
-  			osDelay(SERVER_ERROR_DELAY);
+  			osDelay(TCP_ERROR_DELAY);
   			continue;
   		}
 
@@ -1025,7 +1058,7 @@ void NetworkServer(void const * argument)
   		{
   			logMessage(TID_SERVER "Unable to update socket flags - errno %03d" ENDL, errno);
   			close(hListen);
-  			osDelay(SERVER_ERROR_DELAY);
+  			osDelay(TCP_ERROR_DELAY);
   			continue;
   		}
 
@@ -1034,7 +1067,7 @@ void NetworkServer(void const * argument)
   			logMessage(TID_SERVER "Unable to bind socket to address " SERVER_LISTEN_ADDR " - errno %03d" ENDL, errno);
   			close(hListen);
   			hListen = -1;
-  			osDelay(SERVER_ERROR_DELAY);
+  			osDelay(TCP_ERROR_DELAY);
   			continue;
   		}
   		logMessage(TID_SERVER "Socket opened and bound to address " SERVER_LISTEN_ADDR ":%d" ENDL, SERVER_LISTEN_PORT);
@@ -1047,7 +1080,7 @@ void NetworkServer(void const * argument)
 				logMessage(TID_SERVER "Unable to listen for connections - errno %03d" ENDL, errno);
 				close(hListen);
 				hListen = -1;
-				osDelay(SERVER_ERROR_DELAY);
+				osDelay(TCP_ERROR_DELAY);
 				continue;
 			}
 
@@ -1066,7 +1099,7 @@ void NetworkServer(void const * argument)
 					logMessage(TID_SERVER "Unable to accept a connection - errno %03d" ENDL, errno);
 					close(hListen);
 					hListen = -1;
-					osDelay(SERVER_ERROR_DELAY);
+					osDelay(TCP_ERROR_DELAY);
 					continue;
 				}
 
@@ -1086,7 +1119,7 @@ void NetworkServer(void const * argument)
 					logMessage(TID_SERVER "Unable to receive data - errno %03d" ENDL, errno);
 					close(hService);
 					hService = -1;
-					osDelay(SERVER_ERROR_DELAY);
+					osDelay(TCP_ERROR_DELAY);
 					continue;
 				}
 
@@ -1109,7 +1142,7 @@ void NetworkServer(void const * argument)
 					logMessage(TID_SERVER "Unable to send data - errno %03d" ENDL, errno);
 					close(hService);
 					hService = -1;
-					osDelay(SERVER_ERROR_DELAY);
+					osDelay(TCP_ERROR_DELAY);
 					continue;
 				}
 				logMessage(TID_SERVER "Data sent successfully." ENDL);
@@ -1122,6 +1155,134 @@ void NetworkServer(void const * argument)
 				hListen = -1;
 			}
     }
+  }
+}
+
+int32_t connectWithTimeout(int32_t hSocket, struct sockaddr *remoteAddress, socklen_t socksize)
+{
+  int32_t status;
+  fd_set fdSet;
+  struct timeval tv = {.tv_sec = 0, .tv_usec = 500000};
+
+  status = connect(hSocket, remoteAddress, socksize);
+  if (status == 0)
+  	return 0;
+
+  if (errno != EINPROGRESS)
+  	return -1;
+
+  FD_ZERO(&fdSet);
+  FD_SET(hSocket, &fdSet);
+
+  status = select(hSocket+1, NULL, &fdSet, NULL, &tv);
+  if (status == 0)
+  	return -1;
+  if (status < 0)
+  	return -1;
+
+  int32_t so_error;
+  socklen_t length = sizeof(so_error);
+  if (getsockopt(hSocket, SOL_SOCKET, SO_ERROR, &so_error, &length) == -1)
+  	return -1;
+
+  if (so_error != 0)
+  	return -1;
+
+  return 0;
+}
+
+void NetworkClient(void const * argument)
+{
+	int32_t hSocket = -1;
+	int32_t socketFlags;
+	int32_t status;
+	uint8_t retries;
+	struct sockaddr_in addrServer = {0};
+	char remoteAddress[INET_ADDRSTRLEN] = {0};
+	char txBuffer[CLIENT_TXBUFFER_LEN] = {0};
+
+	addrServer.sin_family = AF_INET;
+	addrServer.sin_port = htons(SERVER_LISTEN_PORT);
+  inet_pton(AF_INET, CLIENT_REMOTE_ADDRESS, &addrServer.sin_addr);
+
+  logMessage(TID_CLIENT "Client ready." ENDL);
+  while (1)
+  {
+    while (hSocket < 0)
+    {
+    	if (ethernetLinkState != ETH_LINK_UP)
+    	{
+    		logMessage(TID_CLIENT "Client paused." ENDL);
+    		osSignalWait(SIG_LINK_UP, osWaitForever);
+    		logMessage(TID_CLIENT "Client resumed." ENDL);
+    	}
+
+  		logMessage(TID_CLIENT "Attempting to open a socket..." ENDL);
+  		// protocol argument is discarded
+  		// SOCK_STREAM is always TCP under LWIP
+  		hSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  		if (hSocket == -1)
+  		{
+  			logMessage(TID_CLIENT "Unable to open a TCP socket - errno %03d" ENDL, errno);
+  			osDelay(TCP_ERROR_DELAY);
+  			continue;
+  		}
+
+  		socketFlags = fcntl(hSocket, F_GETFL, 0);
+  		if (socketFlags == -1)
+  		{
+  			logMessage(TID_CLIENT "Unable to retrieve socket flags - errno %03d" ENDL, errno);
+  			close(hSocket);
+  			osDelay(TCP_ERROR_DELAY);
+  			continue;
+  		}
+
+  		socketFlags |= O_NONBLOCK;
+  		if (fcntl(hSocket, F_SETFL, socketFlags) == -1)
+  		{
+  			logMessage(TID_CLIENT "Unable to update socket flags - errno %03d" ENDL, errno);
+  			close(hSocket);
+  			osDelay(TCP_ERROR_DELAY);
+  			continue;
+  		}
+    }
+
+    logMessage(TID_CLIENT "Attempting to connect to a server..." ENDL);
+
+    retries = 0;
+		while ((retries < CLIENT_MAX_RETRIES) && (ethernetLinkState == ETH_LINK_UP))
+		{
+			status = connectWithTimeout(hSocket, (struct sockaddr *)&addrServer, sizeof(struct sockaddr_in));
+			if (status == 0)
+				break;
+
+			retries += 1;
+      osDelay(CLIENT_CONNECT_DELAY);
+		}
+
+		if ((retries == CLIENT_MAX_RETRIES) || (ethernetLinkState != ETH_LINK_UP))
+		{
+			close(hSocket);
+			hSocket = -1;
+			continue;
+		}
+
+		inet_ntop(AF_INET, &addrServer.sin_addr, remoteAddress, INET_ADDRSTRLEN);
+		logMessage(TID_CLIENT "Connected to %s:%d." ENDL, remoteAddress, ntohs(addrServer.sin_port));
+		formatNetMessage(NET_MSG_DATA, txBuffer, CLIENT_TXBUFFER_LEN);
+		status = send(hSocket, txBuffer, strlen(txBuffer), CLIENT_FLAGS);
+		if (status < 0)
+		{
+			logMessage(TID_CLIENT "Unable to send data - errno %03d" ENDL, errno);
+			close(hSocket);
+			hSocket = -1;
+			osDelay(TCP_ERROR_DELAY);
+			continue;
+		}
+		osDelay(CLIENT_EOC_DELAY);
+		close(hSocket);
+		hSocket = -1;
+		osDelay(CLIENT_NEXT_DELAY);
   }
 }
 
@@ -1140,14 +1301,15 @@ void MemoryAnalyser(void const * argument)
   			"Stack high watermarks in 4-byte words: " ENDL
 				"\tSYS: %3d" ENDL "\tLOG: %3d" ENDL "\tLED: %3d" ENDL
 				"\tADC: %3d" ENDL "\tNET: %3d" ENDL "\tUDP: %3d" ENDL
-				"\tSRV: %3d" ENDL,
+				"\tSRV: %3d" ENDL "\tCLI: %3d" ENDL,
 				(uint32_t)uxTaskGetStackHighWaterMark(systemConductorHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(loggerHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(heartbeatHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(accelerometerHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(ethernetLinkMonitorHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(networkBroadcastHandle),
-				(uint32_t)uxTaskGetStackHighWaterMark(networkServerHandle)
+				(uint32_t)uxTaskGetStackHighWaterMark(networkServerHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(networkClientHandle)
     );
 
     osDelay(DEBUG_POLLING_DELAY);
