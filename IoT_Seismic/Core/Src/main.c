@@ -256,13 +256,13 @@ int main(void)
   osThreadDef(accelerometer, Accelerometer, osPriorityNormal, 0, 256);
   accelerometerHandle = osThreadCreate(osThread(accelerometer), NULL);
 
-  osThreadDef(ethernetLinkMonitor, EthernetLinkMonitor, osPriorityNormal, 0, 128);
+  osThreadDef(ethernetLinkMonitor, EthernetLinkMonitor, osPriorityNormal, 0, 256);
   ethernetLinkMonitorHandle = osThreadCreate(osThread(ethernetLinkMonitor), NULL);
 
-  osThreadDef(networkBroadcast, NetworkBroadcast, osPriorityNormal, 0, 384);
+  osThreadDef(networkBroadcast, NetworkBroadcast, osPriorityNormal, 0, 512);
   networkBroadcastHandle = osThreadCreate(osThread(networkBroadcast), NULL);
 
-  osThreadDef(networkServer, NetworkServer, osPriorityNormal, 0, 256);
+  osThreadDef(networkServer, NetworkServer, osPriorityNormal, 0, 384);
   networkServerHandle = osThreadCreate(osThread(networkServer), NULL);
 #if DEBUG_MEMORY
   osThreadDef(memoryAnalyser, MemoryAnalyser, osPriorityNormal, 0, 256);
@@ -983,7 +983,6 @@ void NetworkServer(void const * argument)
   uint32_t remoteAddressLen;
   char ioBuffer[SERVER_IO_BUFFER_LEN] = {0};
   char valueBuffer[16] = {0};
-
 
   addrListen.sin_family = AF_INET;
   addrListen.sin_port = htons(SERVER_LISTEN_PORT);
