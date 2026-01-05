@@ -23,72 +23,22 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <stdio.h>
-#include <stdarg.h>
-#include <string.h>
-
-#include "lwip/sockets.h"
-#include "lwip/netif.h"
+#include "seismic.h"
+#include "seismic_io.h"
+#include "seismic_log.h"
+#include "seismic_net.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-#define MESSAGE_TEXT_MAXLEN (128UL)
-typedef struct message
-{
-	uint32_t length;
-	char text[MESSAGE_TEXT_MAXLEN];
-} Message;
 
-typedef enum net_msg_type
-{
-	NET_MSG_PRESENCE = 0x00
-} NetMessageType;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ACCEL_AXES              (3)
-#define ACCEL_FSR               (3330)
-#define ACCEL_SAMPLES           (ACCEL_AXES * ACCEL_SAMPLES_PER_AXIS)
-#define ACCEL_SAMPLES_PER_AXIS  (10)
-#define ACCEL_SENSITIVITY       (333)
-#define ACCEL_X_BIAS            (1670)
-#define ACCEL_Y_BIAS            (1655)
-#define ACCEL_Z_BIAS            (1715)
-#define ADC_MAX_VALUE           (4095)
-#define BROAD_ERROR_DELAY       (1000)
-#define BROAD_PAYLOAD_BUFLEN    (128)
-#define BROAD_PORT              (12345)
-#define BROAD_SEND_DELAY        (10000)
-#define DEBUG_MEMORY            (1)
-#define DEBUG_POLLING_DELAY     (10000)
-#define ENDL                    "\r\n"
-#define ETH_LINK_DOWN           (0)
-#define ETH_LINK_PAUSED         (2)
-#define ETH_LINK_POLLING_DELAY  (200)
-#define ETH_LINK_STARTUP_DELAY  (2000)
-#define ETH_LINK_UP             (1)
-#define MAILQ_LENGTH            (0x08)
-#define MAILQ_GET_TIMEOUT       (osWaitForever)
-#define NODE_ID                 "nucleo-03"
-#define NODE_IP                 "192.168.1.183"
-#define SIG_BUTTON              (0x00000001)
-#define SIG_LWIP                (0x00000002)
-#define SIG_LINK_UP             (0x00000004)
-#define SIG_PAUSE               (0x00000010)
-#define SIG_RESUME              (0x00000100)
-#define SYS_DEBOUNCE_MSEC       (100)
-#define SYS_TASKS_RUNNING       (0x00)
-#define SYS_TASKS_PAUSED        (0x01)
-#define TID_SYS                 "<SYSTEM> "
-#define TID_DEBUG               "<MEMORY>"
-#define TID_HEART               "<HEART>  "
-#define TID_LOGGR               "<LOGGER> "
-#define TID_ACCEL               "<ACCEL>  "
-#define TID_ETH                 "<ETHNET> "
-#define TID_BROAD               "<BROAD>  "
-#define UART_TIMEOUT            (100)
+#define DEBUG_MEMORY             (1)
+#define DEBUG_POLLING_DELAY      (60000)
+#define SYS_DEBOUNCE_MSEC        (100)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -109,32 +59,13 @@ UART_HandleTypeDef huart3;
 
 osThreadId systemConductorHandle;
 /* USER CODE BEGIN PV */
-osThreadId heartbeatHandle;
-osThreadId loggerHandle;
-osThreadId accelerometerHandle;
-osThreadId ethernetLinkMonitorHandle;
-osThreadId networkBroadcastHandle;
-
 #if DEBUG_MEMORY
 osThreadId memoryAnalyserHandle;
 #endif
 
-osMailQId mailQueueHandle;
 
-osMutexId uartMutexHandle;
-
-osSemaphoreId accelerometerSemHandle;
-
-uint8_t tasksState = SYS_TASKS_PAUSED;
-uint8_t ethernetLinkState = ETH_LINK_DOWN;
 uint16_t accelDmaBuffer[ACCEL_SAMPLES] = {0x00};
-const char *net_presence_format =
-		"{\n"
-		"  \"type\": \"presence\",\n"
-		"  \"id\": \"" NODE_ID "\",\n"
-		"  \"ip\": \"" NODE_IP "\",\n"
-		"  \"timestamp\": \"%s\"\n"
-		"}";
+uint8_t tasksState = SYS_TASKS_PAUSED;
 
 /* USER CODE END PV */
 
@@ -150,17 +81,9 @@ static void MX_TIM4_Init(void);
 void SystemConductor(void const * argument);
 
 /* USER CODE BEGIN PFP */
-void Heartbeat(void const * argument);
-void Logger(void const * argument);
-void Accelerometer(void const * argument);
-void EthernetLinkMonitor(void const * argument);
-void NetworkBroadcast(void const * argument);
 #if DEBUG_MEMORY
 void MemoryAnalyser(void const * argument);
 #endif
-
-osStatus logMessage(const char *__restrict format, ...);
-ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t bufferSize);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -207,27 +130,16 @@ int main(void)
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
-  osMutexDef(uartMutex);
-  uartMutexHandle = osMutexCreate(osMutex(uartMutex));
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
-  osSemaphoreDef(accelerometerSem);
-  accelerometerSemHandle = osSemaphoreCreate(osSemaphore(accelerometerSem), 1);
-  if (tasksState == SYS_TASKS_PAUSED)
-  {
-  	// take the binary semaphore to block the task after initialisation.
-  	osSemaphoreWait(accelerometerSemHandle, osWaitForever);
-  }
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  osMailQDef(mailQueue, MAILQ_LENGTH, Message);
-  mailQueueHandle = osMailCreate(osMailQ(mailQueue), NULL);
+
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -236,20 +148,9 @@ int main(void)
   systemConductorHandle = osThreadCreate(osThread(systemConductor), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  osThreadDef(logger, Logger, osPriorityNormal, 0, 128);
-  loggerHandle = osThreadCreate(osThread(logger), NULL);
-
-  osThreadDef(heartbeat, Heartbeat, osPriorityNormal, 0, 128);
-  heartbeatHandle = osThreadCreate(osThread(heartbeat), NULL);
-
-  osThreadDef(accelerometer, Accelerometer, osPriorityNormal, 0, 256);
-  accelerometerHandle = osThreadCreate(osThread(accelerometer), NULL);
-
-  osThreadDef(ethernetLinkMonitor, EthernetLinkMonitor, osPriorityNormal, 0, 128);
-  ethernetLinkMonitorHandle = osThreadCreate(osThread(ethernetLinkMonitor), NULL);
-
-  osThreadDef(networkBroadcast, NetworkBroadcast, osPriorityNormal, 0, 384);
-  networkBroadcastHandle = osThreadCreate(osThread(networkBroadcast), NULL);
+  initLogger(&huart3);
+  initIOs(&htim4, &htim6);
+  initNetwork();
 
 #if DEBUG_MEMORY
   osThreadDef(memoryAnalyser, MemoryAnalyser, osPriorityNormal, 0, 256);
@@ -671,231 +572,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void Heartbeat(void const * argument)
-{
-	logMessage(TID_HEART "Heartbeat ready." ENDL);
-	while (1)
-	{
-		osSignalWait(SIG_RESUME, osWaitForever);
-		HAL_TIM_OC_Start(&htim4, TIM_CHANNEL_2);
-		logMessage(TID_HEART "Task resumed." ENDL);
-
-		osSignalWait(SIG_PAUSE, osWaitForever);
-		HAL_TIM_OC_Stop(&htim4, TIM_CHANNEL_2);
-		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
-		logMessage(TID_HEART "Task suspended." ENDL);
-	}
-}
-
-osStatus logMessage(const char *__restrict format, ...)
-{
-	// osMailAlloc() is never blocking, millisec is discarded in v1 implementation
-	Message *message = (Message *)osMailAlloc(mailQueueHandle, 0);
-	if (message == NULL)
-		return osErrorNoMemory;
-
-	va_list args;
-
-	va_start(args, format);
-	vsnprintf(message->text, MESSAGE_TEXT_MAXLEN, format, args);
-	va_end(args);
-
-	message->length = strlen(message->text);
-
-	return osMailPut(mailQueueHandle, message);
-}
-
-void Logger(void const * argument)
-{
-	logMessage(TID_LOGGR "Started Logger." ENDL);
-	osEvent event = {0x00};
-	Message *message;
-	char timestamp[16];
-	uint32_t ticks;
-	div_t div_result;
-	while (1)
-	{
-		event = osMailGet(mailQueueHandle, MAILQ_GET_TIMEOUT);
-		if (osEventMail != event.status)
-			continue;
-
-		ticks = osKernelSysTick();
-		div_result = div(ticks, osKernelSysTickFrequency);
-		snprintf(timestamp, 16, "[%8d.%03d] ", div_result.quot, div_result.rem);
-		message = (Message *)event.value.p;
-		osMutexWait(uartMutexHandle, osWaitForever);
-		HAL_UART_Transmit(&huart3, (uint8_t*)timestamp, 16, UART_TIMEOUT);
-		HAL_UART_Transmit(&huart3, (uint8_t*)message->text, message->length, UART_TIMEOUT);
-		osMutexRelease(uartMutexHandle);
-		osMailFree(mailQueueHandle, event.value.p);
-	}
-}
-
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
-{
-	osSemaphoreRelease(accelerometerSemHandle);
-}
-
-void Accelerometer(void const * argument)
-{
-	int32_t sumX = 0;
-	int32_t sumY = 0;
-	int32_t sumZ = 0;
-	float accelX;
-	float accelY;
-	float accelZ;
-	uint8_t bufferIndex = 0;
-
-	logMessage(TID_ACCEL "Accelerometer ready." ENDL);
-	while (1)
-	{
-		osSemaphoreWait(accelerometerSemHandle, osWaitForever);
-
-		if (tasksState == SYS_TASKS_PAUSED)
-		{
-			HAL_TIM_Base_Stop_IT(&htim6);
-			logMessage(TID_ACCEL "Task suspended." ENDL);
-			continue;
-		}
-
-		// Only restart the timer once after resume.
-		if (htim6.State == HAL_TIM_STATE_READY)
-		{
-			HAL_TIM_Base_Start_IT(&htim6);
-			logMessage(TID_ACCEL "Task resumed." ENDL);
-			// Wait until the next interrupt, DMA transfer may not be done after resume.
-			osSemaphoreWait(accelerometerSemHandle, osWaitForever);
-		}
-
-		while (bufferIndex < 10)
-		{
-			sumX += accelDmaBuffer[ACCEL_AXES * bufferIndex];
-			sumY += accelDmaBuffer[ACCEL_AXES * bufferIndex + 1];
-			sumZ += accelDmaBuffer[ACCEL_AXES * bufferIndex + 2];
-			bufferIndex++;
-		}
-		bufferIndex = 0;
-
-		accelX = (((float)sumX * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_X_BIAS) / ACCEL_SENSITIVITY;
-		accelY = (((float)sumY * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Y_BIAS) / ACCEL_SENSITIVITY;
-		accelZ = (((float)sumZ * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Z_BIAS) / ACCEL_SENSITIVITY;
-		logMessage(TID_ACCEL "x=%6.2f, y=%6.2f, z=%6.2f" ENDL, accelX, accelY, accelZ);
-		sumX = sumY = sumZ = 0;
-	}
-}
-
-void EthernetLinkMonitor(void const * argument)
-{
-	uint8_t currentLinkState = ETH_LINK_DOWN;
-
-	osSignalWait(SIG_LWIP, osWaitForever);
-	// Wait for LWIP to finalise its initialisation.
-	osDelay(ETH_LINK_STARTUP_DELAY);
-
-	logMessage(TID_ETH "Ethernet link monitor ready." ENDL);
-  while (1)
-  {
-  	currentLinkState = netif_is_link_up(netif_default);
-
-  	if (tasksState == SYS_TASKS_PAUSED)
-  		currentLinkState = ETH_LINK_PAUSED;
-
-  	if (currentLinkState == ethernetLinkState)
-  	{
-  		osDelay(ETH_LINK_POLLING_DELAY);
-  		continue;
-  	}
-
-  	ethernetLinkState = currentLinkState;
-  	switch (ethernetLinkState)
-  	{
-  	case ETH_LINK_DOWN:
-  		logMessage(TID_ETH "Link is down." ENDL);
-  		break;
-  	case ETH_LINK_UP:
-  		logMessage(TID_ETH "Link is up." ENDL);
-  		osSignalSet(networkBroadcastHandle, SIG_LINK_UP);
-  		break;
-  	case ETH_LINK_PAUSED:
-  		logMessage(TID_ETH "Network paused." ENDL);
-  		osSignalWait(SIG_RESUME, osWaitForever);
-  		logMessage(TID_ETH "Network resumed." ENDL);
-  		break;
-  	}
-  }
-}
-
-ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t bufferSize)
-{
-	if (messageBuffer == NULL)
-		return -1;
-
-	// TODO: fetch timestamp with external RTC (step-3)
-	const char *timestamp = "2025-12-26T12:31:42Z";
-
-	switch (type)
-	{
-	case NET_MSG_PRESENCE:
-		return snprintf(messageBuffer, bufferSize, net_presence_format, timestamp);
-	default:
-		logMessage("<ERROR>  Net message type invalid - 0x%08X" ENDL, type);
-		return -1;
-	}
-}
-
-void NetworkBroadcast(void const * argument)
-{
-  int32_t hBroadcast = -1;
-  ssize_t bytesSent;
-  uint32_t previousTimeStamp;
-  struct sockaddr_in broadcast_addr = {0};
-  broadcast_addr.sin_family = AF_INET;
-  broadcast_addr.sin_port = htons(BROAD_PORT);
-  broadcast_addr.sin_addr.s_addr = IPADDR_BROADCAST;
-
-  char payload[BROAD_PAYLOAD_BUFLEN];
-  ssize_t formattedLength = 0;
-
-  logMessage(TID_BROAD "Network broadcast ready."ENDL);
-  while (1)
-  {
-  	while (hBroadcast < 0)
-  	{
-  		if (ethernetLinkState != ETH_LINK_UP)
-  			osSignalWait(SIG_LINK_UP, osWaitForever);
-
-      hBroadcast = lwip_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-      if (hBroadcast == -1)
-      {
-      	logMessage(TID_BROAD "Unable to create a socket - ERRNO:%d." ENDL, errno);
-      	osDelay(BROAD_ERROR_DELAY);
-      	continue;
-      }
-
-			int32_t enable = 0x01;
-			if (setsockopt(hBroadcast, SOL_SOCKET, SO_BROADCAST, &enable, sizeof(enable)))
-			{
-				logMessage(TID_BROAD "Unable to configure broadcast - ERRNO:%d" ENDL, errno);
-				close(hBroadcast);
-				hBroadcast = -1;
-				osDelay(BROAD_ERROR_DELAY);
-			}
-  	}
-
-  	bytesSent = 1;
-  	previousTimeStamp = osKernelSysTick();
-  	while ((ethernetLinkState == ETH_LINK_UP) && (bytesSent > 0))
-  	{
-  		formattedLength = formatNetMessage(NET_MSG_PRESENCE, payload, BROAD_PAYLOAD_BUFLEN-1);
-  		bytesSent = sendto(hBroadcast, payload, formattedLength, 0, (struct sockaddr *)&broadcast_addr, sizeof(struct sockaddr_in));
-
-  		osDelayUntil(&previousTimeStamp, BROAD_SEND_DELAY);
-  	}
-  	close(hBroadcast);
-  	hBroadcast = -1;
-  }
-}
-
 #if DEBUG_MEMORY
 void MemoryAnalyser(void const * argument)
 {
@@ -910,13 +586,17 @@ void MemoryAnalyser(void const * argument)
   	logMessage(
   			"Stack high watermarks in 4-byte words: " ENDL
 				"\tSYS: %3d" ENDL "\tLOG: %3d" ENDL "\tLED: %3d" ENDL
-				"\tADC: %3d" ENDL "\tNET: %3d" ENDL "\tUDP: %3d" ENDL,
+				"\tADC: %3d" ENDL "\tNET: %3d" ENDL "\tUDP: %3d" ENDL
+				"\tSRV: %3d" ENDL "\tCLI: %3d" ENDL "\tLIS: %3d" ENDL,
 				(uint32_t)uxTaskGetStackHighWaterMark(systemConductorHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(loggerHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(heartbeatHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(accelerometerHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(ethernetLinkMonitorHandle),
-				(uint32_t)uxTaskGetStackHighWaterMark(networkBroadcastHandle)
+				(uint32_t)uxTaskGetStackHighWaterMark(networkBroadcastHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(networkServerHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(networkClientHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(networkListenerHandle)
     );
 
     osDelay(DEBUG_POLLING_DELAY);
