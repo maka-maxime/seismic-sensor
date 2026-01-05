@@ -171,6 +171,7 @@ void MemoryAnalyser(void const * argument);
 
 osStatus logMessage(const char *__restrict format, ...);
 ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t bufferSize);
+char *jsonGetValue(const char *__restrict json, const char *__restrict key, char *__restrict value, size_t value_length);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -856,6 +857,67 @@ ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t buffer
 	}
 }
 
+char *jsonGetValue(const char *__restrict json, const char *__restrict key, char *__restrict value, size_t value_length)
+{
+  if ((json == NULL) || (key == NULL) || (value == NULL))
+    return NULL;
+
+  value[0] = '\0';
+
+  char *match = NULL;
+  uint32_t formatted_key_len;
+  {
+   uint32_t key_len = strlen(key);
+
+    // Using Variable Length Array since malloc() is not available
+    formatted_key_len = key_len+3;
+    char formatted_key[formatted_key_len];
+    snprintf(formatted_key, formatted_key_len, "\"%s\"", key);
+
+    // points to a key, if it exists
+    match = strstr(json, formatted_key);
+    if (match == NULL)
+      return NULL;
+  }
+
+  // offset the pointer and search the key-value separator
+  match = strchr(match+(formatted_key_len-1), ':');
+  if (match == NULL)
+	  return NULL;
+
+  // consume all characters that are not part of the value
+  do
+    match += 1;
+  while ((*match == ' ') || (*match == '\t') || (*match == '\n') || (*match == '\r') || (*match == '"'));
+
+  if (*match == '\0')
+    return NULL;
+
+  // if value is an object, decapsulate the whole object as a string
+  // if value is a primitive type, return the value as a string
+  int length = 0;
+  if (*match == '{')
+  {
+    while ((length < value_length) && (match[length] != '\0') && (match[length] != '}'))
+      length += 1;
+
+    if (match[length] == '\0')
+      return NULL;
+
+    length += 1;
+  }
+  else
+  {
+    while ((length < value_length) && (match[length] != '\0') && (match[length] != '"') && (match[length] != ',') && (match[length] != '}'))
+      length += 1;
+
+    if (match[length] == '\0')
+      return NULL;
+  }
+
+  return strncpy(value, match, length);
+}
+
 void NetworkBroadcast(void const * argument)
 {
   int32_t hBroadcast = -1;
@@ -919,7 +981,9 @@ void NetworkServer(void const * argument)
   struct sockaddr_in addrService = {0};
   uint8_t remoteAddress[INET_ADDRSTRLEN] = {0};
   uint32_t remoteAddressLen;
-  uint8_t ioBuffer[SERVER_IO_BUFFER_LEN] = {0};
+  char ioBuffer[SERVER_IO_BUFFER_LEN] = {0};
+  char valueBuffer[16] = {0};
+
 
   addrListen.sin_family = AF_INET;
   addrListen.sin_port = htons(SERVER_LISTEN_PORT);
@@ -1036,6 +1100,8 @@ void NetworkServer(void const * argument)
 				}
 
 				logMessage(TID_SERVER "Message received : %s" ENDL, ioBuffer);
+				jsonGetValue(ioBuffer, "type", valueBuffer, 16);
+				logMessage(TID_SERVER "Message type: %s" ENDL, valueBuffer);
 
 				strncpy((char *)ioBuffer, "ACK", SERVER_IO_BUFFER_LEN);
 				bytesTransceived = send(hService, ioBuffer, 3, 0);
