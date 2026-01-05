@@ -33,7 +33,7 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-#define MESSAGE_TEXT_MAXLEN (128UL)
+#define MESSAGE_TEXT_MAXLEN (192UL)
 typedef struct message
 {
 	uint32_t length;
@@ -73,6 +73,13 @@ typedef enum net_msg_type
 #define MAILQ_GET_TIMEOUT       (osWaitForever)
 #define NODE_ID                 "nucleo-03"
 #define NODE_IP                 "192.168.1.183"
+#define SERVER_ACCEPT_POLLING   (200)
+#define SERVER_BACKLOG          (1)
+#define SERVER_FLAGS            (0)
+#define SERVER_ERROR_DELAY      (1000)
+#define SERVER_IO_BUFFER_LEN    (192)
+#define SERVER_LISTEN_ADDR      "0.0.0.0"
+#define SERVER_LISTEN_PORT      (12345)
 #define SIG_BUTTON              (0x00000001)
 #define SIG_LWIP                (0x00000002)
 #define SIG_LINK_UP             (0x00000004)
@@ -82,12 +89,13 @@ typedef enum net_msg_type
 #define SYS_TASKS_RUNNING       (0x00)
 #define SYS_TASKS_PAUSED        (0x01)
 #define TID_SYS                 "<SYSTEM> "
-#define TID_DEBUG               "<MEMORY>"
+#define TID_DEBUG               "<MEMORY> "
 #define TID_HEART               "<HEART>  "
 #define TID_LOGGR               "<LOGGER> "
 #define TID_ACCEL               "<ACCEL>  "
 #define TID_ETH                 "<ETHNET> "
 #define TID_BROAD               "<BROAD>  "
+#define TID_SERVER              "<SERVER> "
 #define UART_TIMEOUT            (100)
 /* USER CODE END PD */
 
@@ -114,6 +122,7 @@ osThreadId loggerHandle;
 osThreadId accelerometerHandle;
 osThreadId ethernetLinkMonitorHandle;
 osThreadId networkBroadcastHandle;
+osThreadId networkServerHandle;
 
 #if DEBUG_MEMORY
 osThreadId memoryAnalyserHandle;
@@ -155,6 +164,7 @@ void Logger(void const * argument);
 void Accelerometer(void const * argument);
 void EthernetLinkMonitor(void const * argument);
 void NetworkBroadcast(void const * argument);
+void NetworkServer(void const * argument);
 #if DEBUG_MEMORY
 void MemoryAnalyser(void const * argument);
 #endif
@@ -236,7 +246,7 @@ int main(void)
   systemConductorHandle = osThreadCreate(osThread(systemConductor), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  osThreadDef(logger, Logger, osPriorityNormal, 0, 128);
+  osThreadDef(logger, Logger, osPriorityNormal, 0, 256);
   loggerHandle = osThreadCreate(osThread(logger), NULL);
 
   osThreadDef(heartbeat, Heartbeat, osPriorityNormal, 0, 128);
@@ -251,6 +261,8 @@ int main(void)
   osThreadDef(networkBroadcast, NetworkBroadcast, osPriorityNormal, 0, 384);
   networkBroadcastHandle = osThreadCreate(osThread(networkBroadcast), NULL);
 
+  osThreadDef(networkServer, NetworkServer, osPriorityNormal, 0, 256);
+  networkServerHandle = osThreadCreate(osThread(networkServer), NULL);
 #if DEBUG_MEMORY
   osThreadDef(memoryAnalyser, MemoryAnalyser, osPriorityNormal, 0, 256);
   memoryAnalyserHandle = osThreadCreate(osThread(memoryAnalyser), NULL);
@@ -815,6 +827,7 @@ void EthernetLinkMonitor(void const * argument)
   	case ETH_LINK_UP:
   		logMessage(TID_ETH "Link is up." ENDL);
   		osSignalSet(networkBroadcastHandle, SIG_LINK_UP);
+  		osSignalSet(networkServerHandle, SIG_LINK_UP);
   		break;
   	case ETH_LINK_PAUSED:
   		logMessage(TID_ETH "Network paused." ENDL);
@@ -896,6 +909,157 @@ void NetworkBroadcast(void const * argument)
   }
 }
 
+void NetworkServer(void const * argument)
+{
+	int32_t hListen = -1;
+	int32_t listenFlags;
+	int32_t hService = -1;
+	int32_t bytesTransceived;
+  struct sockaddr_in addrListen = {0};
+  struct sockaddr_in addrService = {0};
+  uint8_t remoteAddress[INET_ADDRSTRLEN] = {0};
+  uint32_t remoteAddressLen;
+  uint8_t ioBuffer[SERVER_IO_BUFFER_LEN] = {0};
+
+  addrListen.sin_family = AF_INET;
+  addrListen.sin_port = htons(SERVER_LISTEN_PORT);
+  addrListen.sin_addr.s_addr = INADDR_ANY;
+
+	logMessage(TID_SERVER "Server ready." ENDL);
+  while (1)
+  {
+  	while (hListen < 0)
+  	{
+  		if (ethernetLinkState != ETH_LINK_UP)
+  		{
+  			logMessage(TID_SERVER "Server paused." ENDL);
+  			osSignalWait(SIG_LINK_UP, osWaitForever);
+  			logMessage(TID_SERVER "Server resumed." ENDL);
+  		}
+
+  		logMessage(TID_SERVER "Attempting to open a socket..." ENDL);
+  		// protocol argument is discarded
+  		// SOCK_STREAM is always TCP under LWIP
+  		hListen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  		if (hListen == -1)
+  		{
+  			logMessage(TID_SERVER "Unable to open a TCP socket - errno %03d" ENDL, errno);
+  			osDelay(SERVER_ERROR_DELAY);
+  			continue;
+  		}
+
+  		listenFlags = fcntl(hListen, F_GETFL, 0);
+  		if (listenFlags == -1)
+  		{
+  			logMessage(TID_SERVER "Unable to retrieve socket flags - errno %03d" ENDL, errno);
+  			close(hListen);
+  			osDelay(SERVER_ERROR_DELAY);
+  			continue;
+  		}
+
+  		listenFlags |= O_NONBLOCK;
+  		if (fcntl(hListen, F_SETFL, listenFlags) == -1)
+  		{
+  			logMessage(TID_SERVER "Unable to update socket flags - errno %03d" ENDL, errno);
+  			close(hListen);
+  			osDelay(SERVER_ERROR_DELAY);
+  			continue;
+  		}
+
+  		if (bind(hListen, (struct sockaddr *)&addrListen, sizeof(struct sockaddr_in)) == -1)
+  		{
+  			logMessage(TID_SERVER "Unable to bind socket to address " SERVER_LISTEN_ADDR " - errno %03d" ENDL, errno);
+  			close(hListen);
+  			hListen = -1;
+  			osDelay(SERVER_ERROR_DELAY);
+  			continue;
+  		}
+  		logMessage(TID_SERVER "Socket opened and bound to address " SERVER_LISTEN_ADDR ":%d" ENDL, SERVER_LISTEN_PORT);
+  	}
+
+  	while ((hListen >= 0) && (ethernetLinkState == ETH_LINK_UP))
+    {
+			if (listen(hListen, SERVER_BACKLOG))
+			{
+				logMessage(TID_SERVER "Unable to listen for connections - errno %03d" ENDL, errno);
+				close(hListen);
+				hListen = -1;
+				osDelay(SERVER_ERROR_DELAY);
+				continue;
+			}
+
+			logMessage(TID_SERVER "Waiting for remote client to connect..." ENDL);
+			while ((hListen >= 0) && (hService < 0) && (ethernetLinkState == ETH_LINK_UP))
+			{
+				hService = accept(hListen, (struct sockaddr *)&addrService, &remoteAddressLen);
+				if ((hService == -1) && ((errno == EWOULDBLOCK) || (errno == EAGAIN)))
+				{
+					osDelay(SERVER_ACCEPT_POLLING);
+					continue;
+				}
+
+				if (hService == -1)
+				{
+					logMessage(TID_SERVER "Unable to accept a connection - errno %03d" ENDL, errno);
+					close(hListen);
+					hListen = -1;
+					osDelay(SERVER_ERROR_DELAY);
+					continue;
+				}
+
+				if (hService >= 0)
+				{
+					// At this point inet_ntop cannot fail; no use checking return value.
+					(void) inet_ntop(AF_INET, &(addrService.sin_addr.s_addr), (char *)remoteAddress, INET_ADDRSTRLEN);
+					logMessage(TID_SERVER "Client connected - %s:%d" ENDL, remoteAddress, ntohs(addrService.sin_port));
+				}
+			}
+
+			while ((hService >= 0) && (ethernetLinkState == ETH_LINK_UP))
+			{
+				bytesTransceived = recv(hService, ioBuffer, SERVER_IO_BUFFER_LEN, SERVER_FLAGS);
+				if (bytesTransceived == -1)
+				{
+					logMessage(TID_SERVER "Unable to receive data - errno %03d" ENDL, errno);
+					close(hService);
+					hService = -1;
+					osDelay(SERVER_ERROR_DELAY);
+					continue;
+				}
+
+				if (bytesTransceived == 0)
+				{
+					logMessage(TID_SERVER "Remote disconnected normally." ENDL);
+					close(hService);
+					hService = -1;
+					continue;
+				}
+
+				logMessage(TID_SERVER "Message received : %s" ENDL, ioBuffer);
+
+				strncpy((char *)ioBuffer, "ACK", SERVER_IO_BUFFER_LEN);
+				bytesTransceived = send(hService, ioBuffer, 3, 0);
+				if (bytesTransceived == -1)
+				{
+					logMessage(TID_SERVER "Unable to send data - errno %03d" ENDL, errno);
+					close(hService);
+					hService = -1;
+					osDelay(SERVER_ERROR_DELAY);
+					continue;
+				}
+				logMessage(TID_SERVER "Data sent successfully." ENDL);
+			}
+
+			if (ethernetLinkState != ETH_LINK_UP)
+			{
+				logMessage(TID_SERVER "Closing the listening socket - link is not up." ENDL);
+				close(hListen);
+				hListen = -1;
+			}
+    }
+  }
+}
+
 #if DEBUG_MEMORY
 void MemoryAnalyser(void const * argument)
 {
@@ -910,13 +1074,15 @@ void MemoryAnalyser(void const * argument)
   	logMessage(
   			"Stack high watermarks in 4-byte words: " ENDL
 				"\tSYS: %3d" ENDL "\tLOG: %3d" ENDL "\tLED: %3d" ENDL
-				"\tADC: %3d" ENDL "\tNET: %3d" ENDL "\tUDP: %3d" ENDL,
+				"\tADC: %3d" ENDL "\tNET: %3d" ENDL "\tUDP: %3d" ENDL
+				"\tSRV: %3d" ENDL,
 				(uint32_t)uxTaskGetStackHighWaterMark(systemConductorHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(loggerHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(heartbeatHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(accelerometerHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(ethernetLinkMonitorHandle),
-				(uint32_t)uxTaskGetStackHighWaterMark(networkBroadcastHandle)
+				(uint32_t)uxTaskGetStackHighWaterMark(networkBroadcastHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(networkServerHandle)
     );
 
     osDelay(DEBUG_POLLING_DELAY);
