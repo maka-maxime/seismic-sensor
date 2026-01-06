@@ -6,7 +6,6 @@
 #include "seismic_log.h"
 #include "seismic_net.h"
 
-#define BROAD_PAYLOAD_BUFLEN     (128)
 #define BROAD_PORT               (12345)
 #define BROAD_SEND_DELAY         (10000)
 #define CLIENT_LOOP_DELAY        (10000)
@@ -19,16 +18,16 @@
 #define CLIENT_NEXT_DELAY        (500)
 #define CLIENT_POLL_REMOTES      (2000)
 #define CLIENT_REMOTE_ADDRESS    "192.168.1.174"
-#define CLIENT_TXBUFFER_LEN      (192)
 #define ETH_LINK_DOWN            (0)
 #define ETH_LINK_PAUSED          (2)
 #define ETH_LINK_POLLING_DELAY   (200)
 #define ETH_LINK_STARTUP_DELAY   (2000)
 #define ETH_LINK_UP              (1)
+#define NET_BUFFER_LENGTH        (144)
+#define NET_RECVFROM_TIMEOUT     (500000) // microseconds
 #define SERVER_ACCEPT_POLLING    (200)
 #define SERVER_BACKLOG           (1)
 #define SERVER_FLAGS             (0)
-#define SERVER_IO_BUFFER_LEN     (192)
 #define SERVER_LISTEN_ADDR       "0.0.0.0"
 #define SERVER_LISTEN_PORT       (12345)
 #define SOCK_BROADCAST           (0x00000002)
@@ -62,13 +61,16 @@ static int32_t connectWithTimeout(int32_t hSocket, struct sockaddr *remoteAddres
 static ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t bufferSize);
 static int8_t getNextRegisteredRemote(int8_t currentRemote);
 static char *jsonGetValue(const char *__restrict json, const char *__restrict key, char *__restrict value, size_t value_length);
+static int32_t genericSocket(int32_t domain, int32_t type, int32_t protocol, uint32_t flags, struct sockaddr *address, socklen_t addressLength);
+static int32_t recvfromWithTimeout(int32_t hSocket, void *buffer, size_t bufferLenght, int32_t flags, struct sockaddr *address, socklen_t *addressLength);
 static int32_t tcpSocket(uint32_t flags, struct sockaddr *address, socklen_t addressLength);
-static int32_t udpSocket(uint32_t flags);
+static int32_t udpSocket(uint32_t flags, struct sockaddr *address, socklen_t addressLength);
 static int32_t setNonBlocking(int32_t hSocket);
 
 osThreadId ethernetLinkMonitorHandle;
 osThreadId networkBroadcastHandle;
 osThreadId networkClientHandle;
+osThreadId networkListenerHandle;
 osThreadId networkServerHandle;
 
 uint8_t ethernetLinkState = ETH_LINK_DOWN;
@@ -89,6 +91,9 @@ void initNetwork()
 
 	osThreadDef(networkClient, NetworkClient, osPriorityNormal, 0, 384);
 	networkClientHandle = osThreadCreate(osThread(networkClient), NULL);
+
+	osThreadDef(networkListener, NetworkListener, osPriorityNormal, 0, 384);
+	networkListenerHandle = osThreadCreate(osThread(networkListener), NULL);
 }
 
 void EthernetLinkMonitor(void const * argument)
@@ -122,8 +127,9 @@ void EthernetLinkMonitor(void const * argument)
   	case ETH_LINK_UP:
   		logMessage(TID_ETH "Link is up." ENDL);
   		osSignalSet(networkBroadcastHandle, SIG_LINK_UP);
-  		osSignalSet(networkServerHandle, SIG_LINK_UP);
   		osSignalSet(networkClientHandle, SIG_LINK_UP);
+  		osSignalSet(networkListenerHandle, SIG_LINK_UP);
+  		osSignalSet(networkServerHandle, SIG_LINK_UP);
   		break;
   	case ETH_LINK_PAUSED:
   		logMessage(TID_ETH "Network paused." ENDL);
@@ -144,7 +150,7 @@ void NetworkBroadcast(void const * argument)
   broadcast_addr.sin_port = htons(BROAD_PORT);
   broadcast_addr.sin_addr.s_addr = IPADDR_BROADCAST;
 
-  char payload[BROAD_PAYLOAD_BUFLEN];
+  char payload[NET_BUFFER_LENGTH];
   ssize_t formattedLength = 0;
 
   logMessage(TID_BROAD "Network broadcast ready."ENDL);
@@ -155,7 +161,7 @@ void NetworkBroadcast(void const * argument)
   		if (ethernetLinkState != ETH_LINK_UP)
   			osSignalWait(SIG_LINK_UP, osWaitForever);
 
-  		hBroadcast = udpSocket(SOCK_BROADCAST);
+  		hBroadcast = udpSocket(SOCK_BROADCAST, NULL, 0);
       if (hBroadcast == -1)
       {
       	logMessage(TID_BROAD "Unable to create a socket - ERRNO:%d." ENDL, errno);
@@ -166,7 +172,7 @@ void NetworkBroadcast(void const * argument)
   	previousTimeStamp = osKernelSysTick();
   	while (ethernetLinkState == ETH_LINK_UP)
   	{
-  		formattedLength = formatNetMessage(NET_MSG_PRESENCE, payload, BROAD_PAYLOAD_BUFLEN-1);
+  		formattedLength = formatNetMessage(NET_MSG_PRESENCE, payload, NET_BUFFER_LENGTH-1);
   		bytesSent = sendto(hBroadcast, payload, formattedLength, 0, (struct sockaddr *)&broadcast_addr, sizeof(struct sockaddr_in));
 
   		if (bytesSent <= 0)
@@ -186,7 +192,7 @@ void NetworkClient(void const * argument)
 	uint8_t retries;
 	struct sockaddr_in addrServer = {0};
 	char remoteAddress[INET_ADDRSTRLEN] = {0};
-	char txBuffer[CLIENT_TXBUFFER_LEN] = {0};
+	char txBuffer[NET_BUFFER_LENGTH] = {0};
 	int8_t currentRemote = -1;
 
 	addrServer.sin_family = AF_INET;
@@ -244,7 +250,7 @@ void NetworkClient(void const * argument)
 
 		inet_ntop(AF_INET, &addrServer.sin_addr, remoteAddress, INET_ADDRSTRLEN);
 		logMessage(TID_CLIENT "Connected to node %d/%d - %s:%d." ENDL, currentRemote+1, remoteCount, remoteAddress, ntohs(addrServer.sin_port));
-		formatNetMessage(NET_MSG_DATA, txBuffer, CLIENT_TXBUFFER_LEN);
+		formatNetMessage(NET_MSG_DATA, txBuffer, NET_BUFFER_LENGTH);
 		status = send(hSocket, txBuffer, strlen(txBuffer), CLIENT_FLAGS);
 		if (status < 0)
 		{
@@ -261,6 +267,66 @@ void NetworkClient(void const * argument)
   }
 }
 
+void NetworkListener(void const * argument)
+{
+  int32_t hListener = -1;
+  int32_t status;
+  struct sockaddr_in addressListener = {0};
+	char listenerNetBuffer[NET_BUFFER_LENGTH] = {0};
+	char valueBuffer[16] = {0};
+	struct sockaddr_in addressRemote = {0};
+	socklen_t sizeRemote;
+
+	addressListener.sin_family = AF_INET;
+	addressListener.sin_port = htons(BROAD_PORT);
+	addressListener.sin_addr.s_addr = IPADDR_ANY;
+
+	logMessage(TID_LISTENER "Network listener ready." ENDL);
+	while (1)
+	{
+		while (hListener < 0)
+		{
+			if (ethernetLinkState != ETH_LINK_UP)
+			{
+				logMessage(TID_LISTENER "Listener paused." ENDL);
+	 			osSignalWait(SIG_LINK_UP, osWaitForever);
+	 			logMessage(TID_LISTENER "Listener resumed." ENDL);
+			}
+
+			logMessage(TID_LISTENER "Attempting to open a socket..." ENDL);
+			hListener = udpSocket(SOCK_BROADCAST | SOCK_NONBLOCK | SOCK_BIND, (struct sockaddr *)&addressListener, sizeof(struct sockaddr_in));
+	    if (hListener == -1)
+	    {
+	      logMessage(TID_BROAD "Unable to create a socket - ERRNO:%d." ENDL, errno);
+	      osDelay(SOCK_ERROR_DELAY);
+	    }
+	  }
+
+    while ((ethernetLinkState == ETH_LINK_UP) && (hListener >= 0))
+    {
+  		//logMessage(TID_LISTENER "Waiting for a message with a timeout..." ENDL);
+    	status = recvfromWithTimeout(hListener, listenerNetBuffer, NET_BUFFER_LENGTH, 0, (struct sockaddr *)&addressRemote, &sizeRemote);
+    	if (status < 0)
+    	{
+    		logMessage(TID_LISTENER "Unable to receive datagram - errno %03d" ENDL, errno);
+    		close(hListener);
+    		hListener = -1;
+    		continue;
+    	}
+
+    	if (status == 0)
+    	//{
+    		//logMessage(TID_LISTENER "Timeout." ENDL);
+    		continue;
+    	//}
+
+      logMessage(TID_LISTENER "Message received." ENDL);
+      jsonGetValue(listenerNetBuffer, "type", valueBuffer, 16);
+			logMessage(TID_LISTENER "Message type: %s" ENDL, valueBuffer);
+    }
+	}
+}
+
 void NetworkServer(void const * argument)
 {
 	int32_t hListen = -1;
@@ -270,7 +336,7 @@ void NetworkServer(void const * argument)
   struct sockaddr_in addrService = {0};
   uint8_t remoteAddress[INET_ADDRSTRLEN] = {0};
   uint32_t remoteAddressLen;
-  char ioBuffer[SERVER_IO_BUFFER_LEN] = {0};
+  char ioBuffer[NET_BUFFER_LENGTH] = {0};
   char valueBuffer[16] = {0};
 
   addrListen.sin_family = AF_INET;
@@ -340,7 +406,7 @@ void NetworkServer(void const * argument)
 
 			while ((hService >= 0) && (ethernetLinkState == ETH_LINK_UP))
 			{
-				bytesTransceived = recv(hService, ioBuffer, SERVER_IO_BUFFER_LEN, SERVER_FLAGS);
+				bytesTransceived = recv(hService, ioBuffer, NET_BUFFER_LENGTH, SERVER_FLAGS);
 				if (bytesTransceived == -1)
 				{
 					logMessage(TID_SERVER "Unable to receive data - errno %03d" ENDL, errno);
@@ -362,7 +428,7 @@ void NetworkServer(void const * argument)
 				jsonGetValue(ioBuffer, "type", valueBuffer, 16);
 				logMessage(TID_SERVER "Message type: %s" ENDL, valueBuffer);
 
-				strncpy((char *)ioBuffer, "ACK", SERVER_IO_BUFFER_LEN);
+				strncpy((char *)ioBuffer, "ACK", NET_BUFFER_LENGTH);
 				bytesTransceived = send(hService, ioBuffer, 3, 0);
 				if (bytesTransceived == -1)
 				{
@@ -436,6 +502,47 @@ ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t buffer
 		logMessage("<ERROR>  Net message type invalid - 0x%08X" ENDL, type);
 		return -1;
 	}
+}
+
+int32_t genericSocket(
+		int32_t domain,
+		int32_t type,
+		int32_t protocol,
+		uint32_t flags,
+		struct sockaddr *address,
+		socklen_t addressLength)
+{
+	int32_t hSocket = socket(domain, type, protocol);
+
+	if ((flags & SOCK_NONBLOCK) && (hSocket >= 0))
+	  hSocket = setNonBlocking(hSocket);
+
+	if ((flags & SOCK_BROADCAST) && (hSocket >= 0))
+	{
+	  if (type == SOCK_STREAM)
+	  {
+	  	close(hSocket);
+	    return -1;
+	  }
+
+	  int32_t enable = 0x01;
+		if (setsockopt(hSocket, SOL_SOCKET, SO_BROADCAST, &enable, sizeof(enable)))
+		{
+		  close(hSocket);
+			return -1;
+		}
+	}
+
+	if ((flags & SOCK_BIND) && (hSocket >= 0))
+	{
+		if (bind(hSocket, address, addressLength) == -1)
+		{
+			close(hSocket);
+      return -1;
+		}
+	}
+
+	return hSocket;
 }
 
 int8_t getNextRegisteredRemote(int8_t currentRemote)
@@ -512,47 +619,41 @@ char *jsonGetValue(const char *__restrict json, const char *__restrict key, char
   return strncpy(value, match, length);
 }
 
-int32_t tcpSocket(uint32_t flags, struct sockaddr *address, socklen_t addressLength)
+int32_t recvfromWithTimeout(int32_t hSocket, void *buffer, size_t bufferLenght, int32_t flags, struct sockaddr *address, socklen_t *addressLength)
 {
-	// protocol argument is discarded
-	// SOCK_STREAM is always TCP under LWIP
-	int32_t hSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  int32_t status;
+  fd_set fdSet;
+  struct timeval tv = {.tv_sec = 0, .tv_usec = NET_RECVFROM_TIMEOUT};
 
-	if (flags & SOCK_NONBLOCK)
-	  hSocket = setNonBlocking(hSocket);
+  FD_ZERO(&fdSet);
+  FD_SET(hSocket, &fdSet);
 
-	if ((flags & SOCK_BIND) && (hSocket >= 0))
-	{
-		if (bind(hSocket, address, addressLength) == -1)
-		{
-			close(hSocket);
-      return -1;
-		}
-	}
-
-	return hSocket;
-}
-
-int32_t udpSocket(uint32_t flags)
-{
-  int32_t hSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  if (hSocket < 0)
+  status = select(hSocket+1, &fdSet, NULL, NULL, &tv);
+  if (status < 0)
   	return -1;
 
-  if (flags & SOCK_BROADCAST)
-  {
-		int32_t enable = 0x01;
-		if (setsockopt(hSocket, SOL_SOCKET, SO_BROADCAST, &enable, sizeof(enable)))
-		{
-			close(hSocket);
-			return -1;
-		}
-  }
+  if (status == 0)
+  	return 0;
 
-  if (flags & SOCK_NONBLOCK)
-    hSocket = setNonBlocking(hSocket);
+  if (!FD_ISSET(hSocket, &fdSet))
+  	return -1;
 
-  return hSocket;
+  status = recvfrom(hSocket, buffer, bufferLenght-1, flags, address, addressLength);
+  if (status < 0)
+  	return -1;
+
+  ((char *)buffer)[status] = '\0';
+  return status;
+}
+
+inline int32_t tcpSocket(uint32_t flags, struct sockaddr *address, socklen_t addressLength)
+{
+	return genericSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, flags, address, addressLength);
+}
+
+inline int32_t udpSocket(uint32_t flags, struct sockaddr *address, socklen_t addressLength)
+{
+	return genericSocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP, flags, address, addressLength);
 }
 
 int32_t setNonBlocking(int32_t hSocket)
@@ -574,4 +675,3 @@ int32_t setNonBlocking(int32_t hSocket)
 
 	return hSocket;
 }
-

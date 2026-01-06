@@ -12,6 +12,7 @@ typedef enum net_msg_type
 extern osThreadId ethernetLinkMonitorHandle;
 extern osThreadId networkBroadcastHandle;
 extern osThreadId networkClientHandle;
+extern osThreadId networkListenerHandle;
 extern osThreadId networkServerHandle;
 
 extern uint8_t ethernetLinkState;
@@ -21,6 +22,7 @@ void initNetwork(void);
 void EthernetLinkMonitor(void const * argument);
 void NetworkBroadcast(void const * argument);
 void NetworkClient(void const * argument);
+void NetworkListener(void const * argument);
 void NetworkServer(void const * argument);
 
 #endif /* __SEISMIC_NET_H__ */

@@ -20,6 +20,7 @@
 #define TID_DEBUG                "<MEMORY> "
 #define TID_ETH                  "<ETHNET> "
 #define TID_HEART                "<HEART>  "
+#define TID_LISTENER             "<UDPCLI> "
 #define TID_SERVER               "<SERVER> "
 #define TID_SYS                  "<SYSTEM> "
 

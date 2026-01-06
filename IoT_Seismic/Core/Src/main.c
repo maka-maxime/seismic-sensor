@@ -587,7 +587,7 @@ void MemoryAnalyser(void const * argument)
   			"Stack high watermarks in 4-byte words: " ENDL
 				"\tSYS: %3d" ENDL "\tLOG: %3d" ENDL "\tLED: %3d" ENDL
 				"\tADC: %3d" ENDL "\tNET: %3d" ENDL "\tUDP: %3d" ENDL
-				"\tSRV: %3d" ENDL "\tCLI: %3d" ENDL,
+				"\tSRV: %3d" ENDL "\tCLI: %3d" ENDL "\tLIS: %3d" ENDL,
 				(uint32_t)uxTaskGetStackHighWaterMark(systemConductorHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(loggerHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(heartbeatHandle),
@@ -595,7 +595,8 @@ void MemoryAnalyser(void const * argument)
 				(uint32_t)uxTaskGetStackHighWaterMark(ethernetLinkMonitorHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(networkBroadcastHandle),
 				(uint32_t)uxTaskGetStackHighWaterMark(networkServerHandle),
-				(uint32_t)uxTaskGetStackHighWaterMark(networkClientHandle)
+				(uint32_t)uxTaskGetStackHighWaterMark(networkClientHandle),
+				(uint32_t)uxTaskGetStackHighWaterMark(networkListenerHandle)
     );
 
     osDelay(DEBUG_POLLING_DELAY);
