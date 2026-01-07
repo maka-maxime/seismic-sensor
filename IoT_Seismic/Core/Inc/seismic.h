@@ -13,6 +13,7 @@
 #define SYS_TASKS_RUNNING        (0x00)
 #define SYS_TASKS_PAUSED         (0x01)
 #define NODE_ID                  "nucleo-3"
+#define NODE_ID_LEN              (10)
 #define NODE_IP                  "192.168.1.183"
 #define TID_ACCEL                "<ACCEL>  "
 #define TID_BROAD                "<BROAD>  "

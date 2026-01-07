@@ -37,7 +37,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define DEBUG_MEMORY             (1)
-#define DEBUG_POLLING_DELAY      (10000)
+#define DEBUG_POLLING_DELAY      (60000)
 #define SYS_DEBOUNCE_MSEC        (100)
 /* USER CODE END PD */
 

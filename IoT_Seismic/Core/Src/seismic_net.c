@@ -13,18 +13,22 @@
 #define CLIENT_CONNECT_TIMEOUT   (500000)  // microseconds
 #define CLIENT_EOC_DELAY         (75)
 #define CLIENT_FLAGS             (0)
-#define CLIENT_MAX_REMOTES       (20)
 #define CLIENT_MAX_RETRIES       (4)
-#define CLIENT_NEXT_DELAY        (500)
 #define CLIENT_POLL_REMOTES      (2000)
-#define CLIENT_REMOTE_ADDRESS    "192.168.1.174"
 #define ETH_LINK_DOWN            (0)
 #define ETH_LINK_PAUSED          (2)
 #define ETH_LINK_POLLING_DELAY   (200)
 #define ETH_LINK_STARTUP_DELAY   (2000)
 #define ETH_LINK_UP              (1)
 #define NET_BUFFER_LENGTH        (144)
+#define NET_MAX_NODES            (20)
+#define NET_MSGTYPE_LEN          (10)
+#define NET_MSGTYPE_DATA         "data"
+#define NET_MSGTYPE_PRES         "presence"
 #define NET_RECVFROM_TIMEOUT     (500000) // microseconds
+#define NODES_ALREADY            (-2)
+#define NODES_ERROR              (-1)
+#define NODES_SUCCESS            (0)
 #define SERVER_ACCEPT_POLLING    (200)
 #define SERVER_BACKLOG           (1)
 #define SERVER_FLAGS             (0)
@@ -34,6 +38,12 @@
 #define SOCK_BIND                (0x00000004)
 #define SOCK_ERROR_DELAY         (1000)
 #define SOCK_NONBLOCK            (0x00000001)
+
+typedef struct node_entry {
+	uint32_t node_addr;
+	char node_ipstr[INET_ADDRSTRLEN];
+	char node_id[NODE_ID_LEN];
+} NodeEntry;
 
 static const char *net_presence_format =
 		"{"
@@ -54,15 +64,20 @@ static const char *net_data_format =
 		  "},"
 			"\"status\":\"%s\""
 		"}";
-static uint8_t remoteCount = 0;
-static ip4_addr_t remoteNodes[CLIENT_MAX_REMOTES] = {0};
+static ssize_t nodeCount = 0;
+static osMutexId nodesMutexHandle;
+static NodeEntry nodeRegister[NET_MAX_NODES] = {0};
 
 static int32_t connectWithTimeout(int32_t hSocket, struct sockaddr *remoteAddress, socklen_t socksize);
 static ssize_t formatNetMessage(NetMessageType type, char *messageBuffer, size_t bufferSize);
-static int8_t getNextRegisteredRemote(int8_t currentRemote);
+static ssize_t getNextRegisteredNode(ssize_t currentNode);
+static inline NodeEntry *getNode(uint32_t nodeIndex);
 static char *jsonGetValue(const char *__restrict json, const char *__restrict key, char *__restrict value, size_t value_length);
 static int32_t genericSocket(int32_t domain, int32_t type, int32_t protocol, uint32_t flags, struct sockaddr *address, socklen_t addressLength);
 static int32_t recvfromWithTimeout(int32_t hSocket, void *buffer, size_t bufferLenght, int32_t flags, struct sockaddr *address, socklen_t *addressLength);
+static int32_t registerNode(uint32_t address, const char *__restrict ipstr, const char *__restrict id);
+static int32_t removeNode(uint32_t idx);
+static int32_t resetNodes(void);
 static int32_t tcpSocket(uint32_t flags, struct sockaddr *address, socklen_t addressLength);
 static int32_t udpSocket(uint32_t flags, struct sockaddr *address, socklen_t addressLength);
 static int32_t setNonBlocking(int32_t hSocket);
@@ -77,8 +92,8 @@ uint8_t ethernetLinkState = ETH_LINK_DOWN;
 
 void initNetwork()
 {
-  inet_pton(AF_INET, CLIENT_REMOTE_ADDRESS, &remoteNodes[0]);
-  remoteCount = 1;
+  osMutexDef(nodesMutex);
+  nodesMutexHandle = osMutexCreate(osMutex(nodesMutex));
 
   osThreadDef(ethernetLinkMonitor, EthernetLinkMonitor, osPriorityNormal, 0, 256);
 	ethernetLinkMonitorHandle = osThreadCreate(osThread(ethernetLinkMonitor), NULL);
@@ -123,6 +138,7 @@ void EthernetLinkMonitor(void const * argument)
   	{
   	case ETH_LINK_DOWN:
   		logMessage(TID_ETH "Link is down." ENDL);
+  		resetNodes();
   		break;
   	case ETH_LINK_UP:
   		logMessage(TID_ETH "Link is up." ENDL);
@@ -134,6 +150,7 @@ void EthernetLinkMonitor(void const * argument)
   	case ETH_LINK_PAUSED:
   		logMessage(TID_ETH "Network paused." ENDL);
   		osSignalWait(SIG_RESUME, osWaitForever);
+  		resetNodes();
   		logMessage(TID_ETH "Network resumed." ENDL);
   		break;
   	}
@@ -191,14 +208,14 @@ void NetworkClient(void const * argument)
 	int32_t status;
 	uint8_t retries;
 	struct sockaddr_in addrServer = {0};
-	char remoteAddress[INET_ADDRSTRLEN] = {0};
 	char txBuffer[NET_BUFFER_LENGTH] = {0};
-	int8_t currentRemote = -1;
+	int8_t currentNode = -1;
 
 	addrServer.sin_family = AF_INET;
 	addrServer.sin_port = htons(SERVER_LISTEN_PORT);
 
   logMessage(TID_CLIENT "Client ready." ENDL);
+  osMutexWait(nodesMutexHandle, osWaitForever);
   while (1)
   {
   	while (hSocket < 0)
@@ -206,18 +223,22 @@ void NetworkClient(void const * argument)
     	if (ethernetLinkState != ETH_LINK_UP)
     	{
     		logMessage(TID_CLIENT "Client paused." ENDL);
+    	  osMutexRelease(nodesMutexHandle);
     		osSignalWait(SIG_LINK_UP, osWaitForever);
+    		osMutexWait(nodesMutexHandle, osWaitForever);
     		logMessage(TID_CLIENT "Client resumed." ENDL);
     	}
 
-  		currentRemote = getNextRegisteredRemote(currentRemote);
-  		if (currentRemote == -1)
+  		currentNode = getNextRegisteredNode(currentNode);
+  		if (currentNode == -1)
   		{
-  			logMessage(TID_CLIENT "Looped on all registered nodes." ENDL);
+  			logMessage(TID_CLIENT "Looped on all %d registered nodes." ENDL, nodeCount);
+  			osMutexRelease(nodesMutexHandle);
   			osDelay(CLIENT_LOOP_DELAY);
+  			osMutexWait(nodesMutexHandle, osWaitForever);
   			continue;
   		}
-  		addrServer.sin_addr.s_addr = remoteNodes[currentRemote].addr;
+  		addrServer.sin_addr.s_addr = getNode(currentNode)->node_addr;
 
   		logMessage(TID_CLIENT "Attempting to open a socket..." ENDL);
   		hSocket = tcpSocket(SOCK_NONBLOCK, NULL, 0);
@@ -228,7 +249,7 @@ void NetworkClient(void const * argument)
   		}
     }
 
-    logMessage(TID_CLIENT "Attempting to connect to node %d/%d..." ENDL, currentRemote+1, remoteCount);
+    logMessage(TID_CLIENT "Attempting to connect to node %d..." ENDL, currentNode);
 
     retries = 0;
 		while ((retries < CLIENT_MAX_RETRIES) && (ethernetLinkState == ETH_LINK_UP))
@@ -242,14 +263,14 @@ void NetworkClient(void const * argument)
 
 		if ((retries == CLIENT_MAX_RETRIES) || (ethernetLinkState != ETH_LINK_UP))
 		{
-			logMessage(TID_CLIENT "Unable to connect to node %d/%d." ENDL, currentRemote+1, remoteCount);
+			logMessage(TID_CLIENT "Unable to connect to node %d." ENDL, currentNode);
+			//removeNode(currentNode);
 			close(hSocket);
 			hSocket = -1;
 			continue;
 		}
 
-		inet_ntop(AF_INET, &addrServer.sin_addr, remoteAddress, INET_ADDRSTRLEN);
-		logMessage(TID_CLIENT "Connected to node %d/%d - %s:%d." ENDL, currentRemote+1, remoteCount, remoteAddress, ntohs(addrServer.sin_port));
+		logMessage(TID_CLIENT "Connected to node %d - %s:%d." ENDL, currentNode, getNode(currentNode)->node_ipstr, ntohs(addrServer.sin_port));
 		formatNetMessage(NET_MSG_DATA, txBuffer, NET_BUFFER_LENGTH);
 		status = send(hSocket, txBuffer, strlen(txBuffer), CLIENT_FLAGS);
 		if (status < 0)
@@ -263,7 +284,6 @@ void NetworkClient(void const * argument)
 		osDelay(CLIENT_EOC_DELAY);
 		close(hSocket);
 		hSocket = -1;
-		osDelay(CLIENT_NEXT_DELAY);
   }
 }
 
@@ -273,7 +293,10 @@ void NetworkListener(void const * argument)
   int32_t status;
   struct sockaddr_in addressListener = {0};
 	char listenerNetBuffer[NET_BUFFER_LENGTH] = {0};
-	char valueBuffer[16] = {0};
+	char messageType[NET_MSGTYPE_LEN] = {0};
+	char addressString[INET_ADDRSTRLEN] = {0};
+	uint32_t addressInteger;
+	char nodeId[NODE_ID_LEN] = {0};
 	struct sockaddr_in addressRemote = {0};
 	socklen_t sizeRemote;
 
@@ -302,27 +325,74 @@ void NetworkListener(void const * argument)
 	    }
 	  }
 
+		logMessage(TID_LISTENER "Going to listen for broadcast messages..." ENDL);
     while ((ethernetLinkState == ETH_LINK_UP) && (hListener >= 0))
     {
-  		//logMessage(TID_LISTENER "Waiting for a message with a timeout..." ENDL);
-    	status = recvfromWithTimeout(hListener, listenerNetBuffer, NET_BUFFER_LENGTH, 0, (struct sockaddr *)&addressRemote, &sizeRemote);
+  		status = recvfromWithTimeout(hListener, listenerNetBuffer, NET_BUFFER_LENGTH, 0, (struct sockaddr *)&addressRemote, &sizeRemote);
     	if (status < 0)
     	{
     		logMessage(TID_LISTENER "Unable to receive datagram - errno %03d" ENDL, errno);
-    		close(hListener);
-    		hListener = -1;
-    		continue;
+        close(hListener);
+        hListener = -1;
+        break;
     	}
 
     	if (status == 0)
-    	//{
-    		//logMessage(TID_LISTENER "Timeout." ENDL);
     		continue;
-    	//}
 
-      logMessage(TID_LISTENER "Message received." ENDL);
-      jsonGetValue(listenerNetBuffer, "type", valueBuffer, 16);
-			logMessage(TID_LISTENER "Message type: %s" ENDL, valueBuffer);
+      if (!jsonGetValue(listenerNetBuffer, "type", messageType, NET_MSGTYPE_LEN))
+      {
+      	logMessage(TID_LISTENER "Invalid message - field \"type\" not found." ENDL);
+      	continue;
+      }
+
+			if (strcmp(messageType, "presence") != 0)
+			{
+				logMessage(TID_LISTENER "Message type not supported: %s" ENDL, messageType);
+				continue;
+			}
+
+			logMessage(TID_LISTENER "Message received - type: %s" ENDL, messageType);
+
+			if (!jsonGetValue(listenerNetBuffer, "ip", addressString, INET_ADDRSTRLEN))
+			{
+				logMessage(TID_LISTENER "Invalid message - field \"ip\" not found." ENDL);
+				continue;
+			}
+
+			if (!jsonGetValue(listenerNetBuffer, "id", nodeId, NODE_ID_LEN))
+			{
+				logMessage(TID_LISTENER "Invalid message - field \"id\" not found." ENDL);
+			  continue;
+			}
+
+			if(inet_pton(AF_INET, addressString, &addressInteger) == 0)
+			{
+				logMessage(TID_LISTENER "Value is not valid IPv4 : %s" ENDL, addressString);
+			}
+
+			logMessage(TID_LISTENER "Message originated from %s @ %s" ENDL, nodeId, addressString);
+			osMutexWait(nodesMutexHandle, osWaitForever);
+			status = registerNode(addressInteger, addressString, nodeId);
+			osMutexRelease(nodesMutexHandle);
+
+			switch (status)
+      {
+			case NODES_ALREADY:
+				logMessage(TID_LISTENER "Node already registered." ENDL);
+				break;
+      case NODES_ERROR:
+      	logMessage(TID_LISTENER "Unable to register a node." ENDL);
+      	break;
+      default:
+      	logMessage(TID_LISTENER "Node registered at index %d." ENDL, status);
+      }
+		}
+
+    if (hListener >= 0)
+    {
+    	close(hListener);
+    	hListener = -1;
     }
 	}
 }
@@ -427,18 +497,6 @@ void NetworkServer(void const * argument)
 				logMessage(TID_SERVER "Message received : %s" ENDL, ioBuffer);
 				jsonGetValue(ioBuffer, "type", valueBuffer, 16);
 				logMessage(TID_SERVER "Message type: %s" ENDL, valueBuffer);
-
-				strncpy((char *)ioBuffer, "ACK", NET_BUFFER_LENGTH);
-				bytesTransceived = send(hService, ioBuffer, 3, 0);
-				if (bytesTransceived == -1)
-				{
-					logMessage(TID_SERVER "Unable to send data - errno %03d" ENDL, errno);
-					close(hService);
-					hService = -1;
-					osDelay(SOCK_ERROR_DELAY);
-					continue;
-				}
-				logMessage(TID_SERVER "Data sent successfully." ENDL);
 			}
 
 			if (ethernetLinkState != ETH_LINK_UP)
@@ -545,17 +603,28 @@ int32_t genericSocket(
 	return hSocket;
 }
 
-int8_t getNextRegisteredRemote(int8_t currentRemote)
+/// !!! NEEDS TO BE UNDER MUTEX WAIT !!!
+ssize_t getNextRegisteredNode(ssize_t currentNode)
 {
-	int8_t nextRemote = currentRemote+1;
-  while (nextRemote < remoteCount)
+  ssize_t result = -1;
+	int8_t nextNode = currentNode+1;
+  while (nextNode < nodeCount)
   {
-  	if (remoteNodes[nextRemote].addr != 0)
-  		return nextRemote;
-  	nextRemote++;
+  	if (nodeRegister[nextNode].node_addr != 0)
+  	{
+  		result = nextNode;
+  		break;
+  	}
+  	nextNode++;
   }
 
-  return -1;
+  return result;
+}
+
+/// !!! NEEDS TO BE UNDER MUTEX WAIT !!!
+inline NodeEntry *getNode(uint32_t nodeIndex)
+{
+  return &nodeRegister[nodeIndex];
 }
 
 char *jsonGetValue(const char *__restrict json, const char *__restrict key, char *__restrict value, size_t value_length)
@@ -616,7 +685,9 @@ char *jsonGetValue(const char *__restrict json, const char *__restrict key, char
       return NULL;
   }
 
-  return strncpy(value, match, length);
+  strncpy(value, match, length);
+  value[length] = '\0';
+  return value;
 }
 
 int32_t recvfromWithTimeout(int32_t hSocket, void *buffer, size_t bufferLenght, int32_t flags, struct sockaddr *address, socklen_t *addressLength)
@@ -644,6 +715,82 @@ int32_t recvfromWithTimeout(int32_t hSocket, void *buffer, size_t bufferLenght, 
 
   ((char *)buffer)[status] = '\0';
   return status;
+}
+
+/// !!! NEEDS TO BE UNDER MUTEX WAIT !!!
+/// return value: NODES_ERROR   - unable to register node (no space left)
+///               NODES_ALREADY - node already registered
+///               >= 0          - index of registered node
+int32_t registerNode(uint32_t address, const char *__restrict ipstr, const char *__restrict id)
+{
+	int32_t result = -1;
+  int8_t freeNode = -1;
+  ssize_t nodeIndex = 0;
+
+	if (nodeCount+1 >= NET_MAX_NODES)
+		return NODES_ERROR;
+
+  while (nodeIndex < nodeCount+1)
+  {
+  	// Node already in register.
+  	if (getNode(nodeIndex)->node_addr == address)
+  		return NODES_ALREADY;
+
+  	if ((freeNode == -1) && (getNode(nodeIndex)->node_addr == 0))
+  		freeNode = nodeIndex;
+
+    nodeIndex += 1;
+  }
+
+  // No space found (should not happen here)
+  if (freeNode == -1)
+  {
+    return -1;
+  }
+
+  nodeCount += 1;
+  nodeRegister[freeNode].node_addr = address;
+  strncpy(nodeRegister[freeNode].node_ipstr, ipstr, INET_ADDRSTRLEN);
+  strncpy(nodeRegister[freeNode].node_id, id, NODE_ID_LEN);
+  return freeNode;
+}
+
+/// !!! NEEDS TO BE UNDER MUTEX WAIT !!!
+/// return value: NODES_ERROR - unable to remove node
+///               NODES_ALREADY - node already removed
+///               NODES_SUCCESS - node removed successfully
+int32_t removeNode(uint32_t idx)
+{
+	int32_t result = -1;
+	if (idx >= nodeCount)
+	  return NODES_ERROR;
+
+	if (nodeRegister[idx].node_addr == 0)
+		return NODES_ALREADY;
+
+
+	nodeRegister[idx].node_addr = 0;
+	nodeRegister[idx].node_ipstr[0] = '\0';
+	nodeRegister[idx].node_id[0] = '\0';
+	return NODES_SUCCESS;
+}
+
+/// !!! NEEDS TO BE UNDER MUTEX WAIT !!!
+/// return value:  NODES_ERROR   - node count is invalid (should not happen)
+///                NODES_ALREADY - nodes already cleared
+///                NODES_SUCCESS - nodes successfully cleared
+int32_t resetNodes(void)
+{
+	int32_t result = -1;
+  if (nodeCount < 0)
+  	return NODES_ERROR;
+
+  if (nodeCount == 0)
+  	return NODES_ALREADY;
+
+  nodeCount = 0;
+  memset(nodeRegister, 0, sizeof(NodeEntry)*NET_MAX_NODES);
+  return NODES_SUCCESS;
 }
 
 inline int32_t tcpSocket(uint32_t flags, struct sockaddr *address, socklen_t addressLength)

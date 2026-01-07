@@ -11,7 +11,6 @@
 static TIM_HandleTypeDef *__htimAccelerometer;
 static TIM_HandleTypeDef *__htimHeartbeat;
 
-
 osSemaphoreId accelerometerSemHandle;
 osThreadId accelerometerHandle;
 osThreadId heartbeatHandle;
