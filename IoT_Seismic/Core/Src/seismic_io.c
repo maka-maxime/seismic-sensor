@@ -1,3 +1,4 @@
+#include <math.h>
 #include "seismic_log.h"
 #include "seismic_io.h"
 
@@ -37,12 +38,12 @@ void initIOs(TIM_HandleTypeDef *htimHeartbeat, TIM_HandleTypeDef *htimAccelerome
 
 void Accelerometer(void const * argument)
 {
-	int32_t sumX = 0;
-	int32_t sumY = 0;
-	int32_t sumZ = 0;
-	float accelX;
-	float accelY;
-	float accelZ;
+	uint32_t sumX = 0;
+	uint32_t sumY = 0;
+	uint32_t sumZ = 0;
+	float rmsX;
+	float rmsY;
+	float rmsZ;
 	uint8_t bufferIndex = 0;
 
 	logMessage(TID_ACCEL "Accelerometer ready." ENDL);
@@ -68,20 +69,17 @@ void Accelerometer(void const * argument)
 
 		while (bufferIndex < 10)
 		{
-			sumX += accelDmaBuffer[ACCEL_AXES * bufferIndex];
-			sumY += accelDmaBuffer[ACCEL_AXES * bufferIndex + 1];
-			sumZ += accelDmaBuffer[ACCEL_AXES * bufferIndex + 2];
+			sumX += accelDmaBuffer[ACCEL_AXES * bufferIndex] * accelDmaBuffer[ACCEL_AXES * bufferIndex];
+			sumY += accelDmaBuffer[ACCEL_AXES * bufferIndex + 1] * accelDmaBuffer[ACCEL_AXES * bufferIndex + 1];
+			sumZ += accelDmaBuffer[ACCEL_AXES * bufferIndex + 2] * accelDmaBuffer[ACCEL_AXES * bufferIndex + 1];
 			bufferIndex++;
 		}
 		bufferIndex = 0;
 
-		accelX = (((float)sumX * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_X_BIAS) / ACCEL_SENSITIVITY;
-		accelY = (((float)sumY * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Y_BIAS) / ACCEL_SENSITIVITY;
-		accelZ = (((float)sumZ * ACCEL_FSR ) / (ACCEL_SAMPLES_PER_AXIS * ADC_MAX_VALUE) - ACCEL_Z_BIAS) / ACCEL_SENSITIVITY;
-		UNUSED(accelX);
-		UNUSED(accelY);
-		UNUSED(accelZ);
-		//logMessage(TID_ACCEL "x=%6.2f, y=%6.2f, z=%6.2f" ENDL, accelX, accelY, accelZ);
+		rmsX = (float)sqrt((double)sumX / ACCEL_SAMPLES_PER_AXIS);
+		rmsY = (float)sqrt((double)sumY / ACCEL_SAMPLES_PER_AXIS);
+		rmsZ = (float)sqrt((double)sumZ / ACCEL_SAMPLES_PER_AXIS);
+		logMessage(TID_ACCEL "x=%6.2f, y=%6.2f, z=%6.2f" ENDL, rmsX, rmsY, rmsZ);
 		sumX = sumY = sumZ = 0;
 	}
 }
