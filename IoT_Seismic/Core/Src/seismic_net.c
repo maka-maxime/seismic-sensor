@@ -264,7 +264,7 @@ void NetworkClient(void const * argument)
 		if ((retries == CLIENT_MAX_RETRIES) || (ethernetLinkState != ETH_LINK_UP))
 		{
 			logMessage(TID_CLIENT "Unable to connect to node %d." ENDL, currentNode);
-			//removeNode(currentNode);
+		  logMessage(TID_CLIENT "%s" ENDL, removeNode(currentNode)?"Unable to remove node.":"Node removed.");
 			close(hSocket);
 			hSocket = -1;
 			continue;
@@ -766,10 +766,21 @@ int32_t removeNode(uint32_t idx)
 	if (nodeRegister[idx].node_addr == 0)
 		return NODES_ALREADY;
 
+	int32_t neighbour = idx+1;
+	while (neighbour < nodeCount)
+	{
+    getNode(idx)->node_addr = getNode(neighbour)->node_addr;
+    strncpy(getNode(idx)->node_ipstr, getNode(neighbour)->node_ipstr, INET_ADDRSTRLEN);
+    strncpy(getNode(idx)->node_id, getNode(neighbour)->node_id, NODE_ID_LEN);
+    idx += 1;
+    neighbour += 1;
+	}
 
-	nodeRegister[idx].node_addr = 0;
-	nodeRegister[idx].node_ipstr[0] = '\0';
-	nodeRegister[idx].node_id[0] = '\0';
+	getNode(idx)->node_addr = 0;
+	getNode(idx)->node_ipstr[0] = '\0';
+	getNode(idx)->node_id[0] = '\0';
+
+	nodeCount -= 1;
 	return NODES_SUCCESS;
 }
 
