@@ -159,6 +159,7 @@ void EthernetLinkMonitor(void const * argument)
 
 void NetworkBroadcast(void const * argument)
 {
+  static char broadcastNetBuffer[NET_BUFFER_LENGTH] = {0};
   int32_t hBroadcast = -1;
   ssize_t bytesSent;
   uint32_t previousTimeStamp;
@@ -167,7 +168,6 @@ void NetworkBroadcast(void const * argument)
   broadcast_addr.sin_port = htons(BROAD_PORT);
   broadcast_addr.sin_addr.s_addr = IPADDR_BROADCAST;
 
-  char payload[NET_BUFFER_LENGTH];
   ssize_t formattedLength = 0;
 
   logMessage(TID_BROAD "Network broadcast ready."ENDL);
@@ -189,8 +189,8 @@ void NetworkBroadcast(void const * argument)
   	previousTimeStamp = osKernelSysTick();
   	while (ethernetLinkState == ETH_LINK_UP)
   	{
-  		formattedLength = formatNetMessage(NET_MSG_PRESENCE, payload, NET_BUFFER_LENGTH-1);
-  		bytesSent = sendto(hBroadcast, payload, formattedLength, 0, (struct sockaddr *)&broadcast_addr, sizeof(struct sockaddr_in));
+  		formattedLength = formatNetMessage(NET_MSG_PRESENCE, broadcastNetBuffer, NET_BUFFER_LENGTH-1);
+  		bytesSent = sendto(hBroadcast, broadcastNetBuffer, formattedLength, 0, (struct sockaddr *)&broadcast_addr, sizeof(struct sockaddr_in));
 
   		if (bytesSent <= 0)
   			break;
@@ -204,11 +204,11 @@ void NetworkBroadcast(void const * argument)
 
 void NetworkClient(void const * argument)
 {
+	static char clientNetBuffer[NET_BUFFER_LENGTH] = {0};
 	int32_t hSocket = -1;
 	int32_t status;
 	uint8_t retries;
 	struct sockaddr_in addrServer = {0};
-	char txBuffer[NET_BUFFER_LENGTH] = {0};
 	int8_t currentNode = -1;
 
 	addrServer.sin_family = AF_INET;
@@ -271,8 +271,8 @@ void NetworkClient(void const * argument)
 		}
 
 		logMessage(TID_CLIENT "Connected to node %d - %s:%d." ENDL, currentNode, getNode(currentNode)->node_ipstr, ntohs(addrServer.sin_port));
-		formatNetMessage(NET_MSG_DATA, txBuffer, NET_BUFFER_LENGTH);
-		status = send(hSocket, txBuffer, strlen(txBuffer), CLIENT_FLAGS);
+		formatNetMessage(NET_MSG_DATA, clientNetBuffer, NET_BUFFER_LENGTH);
+		status = send(hSocket, clientNetBuffer, strlen(clientNetBuffer), CLIENT_FLAGS);
 		if (status < 0)
 		{
 			logMessage(TID_CLIENT "Unable to send data - errno %03d" ENDL, errno);
@@ -289,14 +289,14 @@ void NetworkClient(void const * argument)
 
 void NetworkListener(void const * argument)
 {
+	static char listenerNetBuffer[NET_BUFFER_LENGTH] = {0};
+	static char messageType[NET_MSGTYPE_LEN] = {0};
+	static char addressString[INET_ADDRSTRLEN] = {0};
+	static char nodeId[NODE_ID_LEN] = {0};
   int32_t hListener = -1;
   int32_t status;
   struct sockaddr_in addressListener = {0};
-	char listenerNetBuffer[NET_BUFFER_LENGTH] = {0};
-	char messageType[NET_MSGTYPE_LEN] = {0};
-	char addressString[INET_ADDRSTRLEN] = {0};
 	uint32_t addressInteger;
-	char nodeId[NODE_ID_LEN] = {0};
 	struct sockaddr_in addressRemote = {0};
 	socklen_t sizeRemote;
 
@@ -399,15 +399,15 @@ void NetworkListener(void const * argument)
 
 void NetworkServer(void const * argument)
 {
+  static char serverNetBuffer[NET_BUFFER_LENGTH] = {0};
+  static char valueBuffer[16] = {0};
+  static char remoteAddress[INET_ADDRSTRLEN] = {0};
 	int32_t hListen = -1;
 	int32_t hService = -1;
 	int32_t bytesTransceived;
   struct sockaddr_in addrListen = {0};
   struct sockaddr_in addrService = {0};
-  uint8_t remoteAddress[INET_ADDRSTRLEN] = {0};
   uint32_t remoteAddressLen;
-  char ioBuffer[NET_BUFFER_LENGTH] = {0};
-  char valueBuffer[16] = {0};
 
   addrListen.sin_family = AF_INET;
   addrListen.sin_port = htons(SERVER_LISTEN_PORT);
@@ -476,7 +476,7 @@ void NetworkServer(void const * argument)
 
 			while ((hService >= 0) && (ethernetLinkState == ETH_LINK_UP))
 			{
-				bytesTransceived = recv(hService, ioBuffer, NET_BUFFER_LENGTH, SERVER_FLAGS);
+				bytesTransceived = recv(hService, serverNetBuffer, NET_BUFFER_LENGTH, SERVER_FLAGS);
 				if (bytesTransceived == -1)
 				{
 					logMessage(TID_SERVER "Unable to receive data - errno %03d" ENDL, errno);
@@ -494,8 +494,8 @@ void NetworkServer(void const * argument)
 					continue;
 				}
 
-				logMessage(TID_SERVER "Message received : %s" ENDL, ioBuffer);
-				jsonGetValue(ioBuffer, "type", valueBuffer, 16);
+				logMessage(TID_SERVER "Message received : %s" ENDL, serverNetBuffer);
+				jsonGetValue(serverNetBuffer, "type", valueBuffer, 16);
 				logMessage(TID_SERVER "Message type: %s" ENDL, valueBuffer);
 			}
 
@@ -723,7 +723,6 @@ int32_t recvfromWithTimeout(int32_t hSocket, void *buffer, size_t bufferLenght, 
 ///               >= 0          - index of registered node
 int32_t registerNode(uint32_t address, const char *__restrict ipstr, const char *__restrict id)
 {
-	int32_t result = -1;
   int8_t freeNode = -1;
   ssize_t nodeIndex = 0;
 
@@ -761,7 +760,6 @@ int32_t registerNode(uint32_t address, const char *__restrict ipstr, const char 
 ///               NODES_SUCCESS - node removed successfully
 int32_t removeNode(uint32_t idx)
 {
-	int32_t result = -1;
 	if (idx >= nodeCount)
 	  return NODES_ERROR;
 
@@ -781,7 +779,6 @@ int32_t removeNode(uint32_t idx)
 ///                NODES_SUCCESS - nodes successfully cleared
 int32_t resetNodes(void)
 {
-	int32_t result = -1;
   if (nodeCount < 0)
   	return NODES_ERROR;
 
